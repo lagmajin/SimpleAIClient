@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(lagmajinnoqt6 VERSION 0.1.0 LANGUAGES CXX)
+project(SimpleAIClient VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,17 +9,56 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network)
 
 qt_standard_project_setup()
 
-qt_add_executable(lagmajinnoqt6
+qt_add_executable(SimpleAIClient
     src/main.cpp
     src/mainwindow.cpp
     src/apiclient.cpp
 )
 
-target_link_libraries(lagmajinnoqt6 PRIVATE
+target_link_libraries(SimpleAIClient PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
     Qt6::Network
 )
 
-target_include_directories(lagmajinnoqt6 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(SimpleAIClient PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+if(WIN32)
+    set(QT_DEPLOY_DIR "$<TARGET_FILE_DIR:SimpleAIClient>")
+
+    add_custom_command(TARGET SimpleAIClient POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${QT_DEPLOY_DIR}/platforms"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:Qt6::QWindowsIntegrationPlugin>"
+            "${QT_DEPLOY_DIR}/platforms/"
+        COMMENT "Deploying Qt platform plugin..."
+    )
+
+    if(TARGET Qt6::OpenSSLBackendPlugin)
+        add_custom_command(TARGET SimpleAIClient POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${QT_DEPLOY_DIR}/tls"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:Qt6::OpenSSLBackendPlugin>"
+                "${QT_DEPLOY_DIR}/tls/"
+            COMMENT "Deploying Qt TLS backend plugin..."
+        )
+    endif()
+
+    if(DEFINED ENV{VCPKG_ROOT})
+        set(VCPKG_BIN "$ENV{VCPKG_ROOT}/installed/x64-windows/bin")
+        set(SSL_DLLS
+            "${VCPKG_BIN}/libcrypto-3-x64.dll"
+            "${VCPKG_BIN}/libssl-3-x64.dll"
+        )
+        foreach(dll ${SSL_DLLS})
+            if(EXISTS ${dll})
+                add_custom_command(TARGET SimpleAIClient POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        ${dll} "${QT_DEPLOY_DIR}/"
+                    COMMENT "Deploying OpenSSL DLL: ${dll}"
+                )
+            endif()
+        endforeach()
+    endif()
+endif()

@@ -20,10 +20,12 @@ public:
     void setApiKey(const QString &key);
     void setModel(const QString &model);
     void sendMessage(const QList<ChatMessage> &messages);
+    void fetchModels();
 
 signals:
     void responseReceived(const QString &response);
     void errorOccurred(const QString &error);
+    void modelsFetched(const QStringList &models);
 
 private slots:
     void onReplyFinished(QNetworkReply *reply);
@@ -32,6 +34,9 @@ private:
     QNetworkAccessManager *m_networkManager;
     QString m_apiKey;
     QString m_model;
+    enum class RequestType { Chat, Models };
+    void attachRequestType(QNetworkReply *reply, RequestType type);
+    RequestType getRequestType(QNetworkReply *reply) const;
 };
 
 #endif // APICLIENT_H
