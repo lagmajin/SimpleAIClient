@@ -5,7 +5,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(httplib CONFIG REQUIRED)
 
 qt_standard_project_setup()
 
@@ -19,7 +20,7 @@ target_link_libraries(SimpleAIClient PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
-    Qt6::Network
+    httplib::httplib
 )
 
 target_include_directories(SimpleAIClient PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -35,28 +36,21 @@ if(WIN32)
         COMMENT "Deploying Qt platform plugin..."
     )
 
-    if(TARGET Qt6::OpenSSLBackendPlugin)
-        add_custom_command(TARGET SimpleAIClient POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${QT_DEPLOY_DIR}/tls"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:Qt6::OpenSSLBackendPlugin>"
-                "${QT_DEPLOY_DIR}/tls/"
-            COMMENT "Deploying Qt TLS backend plugin..."
-        )
-    endif()
-
     if(DEFINED ENV{VCPKG_ROOT})
         set(VCPKG_BIN "$ENV{VCPKG_ROOT}/installed/x64-windows/bin")
-        set(SSL_DLLS
+        set(DEPLOY_DLLS
             "${VCPKG_BIN}/libcrypto-3-x64.dll"
             "${VCPKG_BIN}/libssl-3-x64.dll"
+            "${VCPKG_BIN}/zlib1.dll"
+            "${VCPKG_BIN}/brotlicommon.dll"
+            "${VCPKG_BIN}/brotlidec.dll"
         )
-        foreach(dll ${SSL_DLLS})
+        foreach(dll ${DEPLOY_DLLS})
             if(EXISTS ${dll})
                 add_custom_command(TARGET SimpleAIClient POST_BUILD
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
                         ${dll} "${QT_DEPLOY_DIR}/"
-                    COMMENT "Deploying OpenSSL DLL: ${dll}"
+                    COMMENT "Deploying DLL: ${dll}"
                 )
             endif()
         endforeach()
