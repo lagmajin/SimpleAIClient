@@ -18,6 +18,10 @@
 #include <QCheckBox>
 #include <QToolButton>
 #include <QTimer>
+#include <QListWidgetItem>
+#include <QMouseEvent>
+#include <QShortcut>
+#include <QStatusBar>
 #include "apiclient.h"
 
 struct ChatSession {
@@ -31,6 +35,28 @@ public:
     AvatarLabel(const QString &role, QWidget *parent = nullptr);
 };
 
+class ChatListItem : public QWidget {
+    Q_OBJECT
+public:
+    ChatListItem(const QString &title, int index, QWidget *parent = nullptr);
+    int index() const { return m_index; }
+
+signals:
+    void clicked(int index);
+    void deleteClicked(int index);
+
+protected:
+    void enterEvent(QEvent *event) override;
+    void leaveEvent(QEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+
+private:
+    int m_index;
+    QLabel *m_iconLabel;
+    QLabel *m_titleLabel;
+    QToolButton *m_deleteBtn;
+};
+
 class ChatMessageCard : public QWidget {
     Q_OBJECT
 public:
@@ -39,6 +65,7 @@ public:
     void setContent(const QString &content);
     void showCopyButton(bool show);
     void setStreaming(bool streaming);
+    void setTokenInfo(int promptTokens, int completionTokens, int totalTokens);
     QString content() const { return m_fullContent; }
 
 signals:
@@ -47,6 +74,7 @@ signals:
 private:
     void renderMarkdown(const QString &text);
     QString escapeHtml(const QString &text);
+    QString renderInlineMarkdown(const QString &text);
     void addCodeBlock(const QString &code, const QString &language);
     void addTextBlock(const QString &text);
     void rebuildContent();
@@ -60,6 +88,7 @@ private:
     QWidget *m_copyContainer;
     QPushButton *m_copyBtn;
     QLabel *m_streamLabel;
+    QLabel *m_tokenLabel;
     bool m_isStreaming;
 };
 
@@ -72,11 +101,12 @@ public:
 
 private slots:
     void onSendMessage();
-    void onResponseReceived(const QString &response);
+    void onResponseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens);
     void onResponseChunk(const QString &chunk);
     void onResponseFinished();
     void onErrorOccurred(const QString &error);
     void onSettings();
+    void onExportChat();
     void onModelsFetched(const QStringList &models);
     void onModelChanged(const QString &model);
     void onNewChat();
@@ -100,14 +130,24 @@ private:
     void loadChatSessions();
     QString generateChatTitle(const QString &firstMessage);
     void clearChatDisplay();
-    void addMessageCard(const QString &role, const QString &content);
+    void addMessageCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0);
     void scrollToBottom();
     void applyModelFilter();
+    void deleteChatAtRow(int row);
+    void showWelcomeScreen();
+    void hideWelcomeScreen();
+    void filterChats(const QString &query);
+    void saveDraft();
+    void loadDraft();
+    void clearDraft();
 
     QWidget *m_sidebar;
-    QListWidget *m_chatList;
+    QLabel *m_appTitle;
+    QLineEdit *m_searchField;
+    QScrollArea *m_chatListScroll;
+    QWidget *m_chatListContainer;
+    QWidget *m_welcomeWidget;
     QPushButton *m_newChatButton;
-    QPushButton *m_deleteChatButton;
     QScrollArea *m_scrollArea;
     QWidget *m_chatContainer;
     QVBoxLayout *m_chatLayout;
@@ -123,6 +163,10 @@ private:
     QSettings m_settings;
     ChatMessageCard *m_streamingCard;
     QStringList m_allModels;
+    QStatusBar *m_statusBar;
+    QLabel *m_statusModel;
+    QLabel *m_statusTokens;
+    QLabel *m_statusConnection;
 };
 
 #endif // MAINWINDOW_H

@@ -217,7 +217,17 @@ void ChatRequestWorker::execute()
             if (!choices.isEmpty()) {
                 QJsonObject firstChoice = choices[0].toObject();
                 QJsonObject message = firstChoice["message"].toObject();
-                emit responseReceived(message["content"].toString());
+                QString content = message["content"].toString();
+
+                int promptTokens = 0, completionTokens = 0, totalTokens = 0;
+                if (obj.contains("usage")) {
+                    QJsonObject usage = obj["usage"].toObject();
+                    promptTokens = usage["prompt_tokens"].toInt();
+                    completionTokens = usage["completion_tokens"].toInt();
+                    totalTokens = usage["total_tokens"].toInt();
+                }
+
+                emit responseReceived(content, promptTokens, completionTokens, totalTokens);
             } else {
                 emit errorOccurred("Empty choices in response");
             }

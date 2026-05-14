@@ -10,6 +10,9 @@
 struct ChatMessage {
     QString role;
     QString content;
+    int promptTokens;
+    int completionTokens;
+    int totalTokens;
 };
 
 class ApiClient : public QObject
@@ -25,7 +28,7 @@ public:
     void fetchModels();
 
 signals:
-    void responseReceived(const QString &response);
+    void responseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens);
     void responseChunk(const QString &chunk);
     void responseFinished();
     void errorOccurred(const QString &error);
