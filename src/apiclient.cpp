@@ -4,11 +4,14 @@
 #include <QJsonArray>
 #include <QThread>
 #include <QDebug>
+#include <QDateTime>
 
 ApiClient::ApiClient(QObject *parent)
     : QObject(parent)
     , m_model("venice-uncensored")
     , m_streaming(false)
+    , m_temperature(0.7)
+    , m_maxTokens(0)
 {
 }
 
@@ -27,10 +30,30 @@ void ApiClient::setStreaming(bool enabled)
     m_streaming = enabled;
 }
 
+void ApiClient::setSystemPrompt(const QString &prompt)
+{
+    m_systemPrompt = prompt;
+}
+
+void ApiClient::setTemperature(double temp)
+{
+    m_temperature = temp;
+}
+
+void ApiClient::setMaxTokens(int maxTokens)
+{
+    m_maxTokens = maxTokens;
+}
+
+void ApiClient::setWebSearch(bool enabled)
+{
+    m_webSearch = enabled;
+}
+
 void ApiClient::sendMessage(const QList<ChatMessage> &messages)
 {
     QThread *thread = new QThread();
-    ChatRequestWorker *worker = new ChatRequestWorker(m_apiKey, m_model, messages, m_streaming);
+    ChatRequestWorker *worker = new ChatRequestWorker(m_apiKey, m_model, messages, m_streaming, m_systemPrompt, m_temperature, m_maxTokens);
     worker->moveToThread(thread);
 
     connect(thread, &QThread::started, worker, &ChatRequestWorker::execute);
@@ -64,8 +87,8 @@ void ApiClient::fetchModels()
     thread->start();
 }
 
-ChatRequestWorker::ChatRequestWorker(const QString &apiKey, const QString &model, const QList<ChatMessage> &messages, bool streaming)
-    : m_apiKey(apiKey), m_model(model), m_messages(messages), m_streaming(streaming)
+ChatRequestWorker::ChatRequestWorker(const QString &apiKey, const QString &model, const QList<ChatMessage> &messages, bool streaming, const QString &systemPrompt, double temperature, int maxTokens)
+    : m_apiKey(apiKey), m_model(model), m_messages(messages), m_streaming(streaming), m_startTime(0), m_systemPrompt(systemPrompt), m_temperature(temperature), m_maxTokens(maxTokens)
 {
 }
 
@@ -102,6 +125,8 @@ QString ChatRequestWorker::parseSSELine(const QString &line)
 
 void ChatRequestWorker::execute()
 {
+    m_startTime = QDateTime::currentMSecsSinceEpoch();
+
     httplib::Client cli("https://api.venice.ai");
     cli.set_follow_location(true);
 
@@ -110,12 +135,53 @@ void ChatRequestWorker::execute()
     payload["stream"] = m_streaming;
 
     QJsonArray jsonMessages;
+    if (!m_systemPrompt.isEmpty()) {
+        QJsonObject systemMsg;
+        systemMsg["role"] = "system";
+        systemMsg["content"] = m_systemPrompt;
+        jsonMessages.append(systemMsg);
+    }
+
     for (const auto &msg : m_messages) {
         QJsonObject jsonMsg;
         jsonMsg["role"] = msg.role;
-        jsonMsg["content"] = msg.content;
+
+        if (!msg.imageUrl.isEmpty()) {
+            QJsonArray contentArray;
+            QJsonObject textPart;
+            textPart["type"] = "text";
+            textPart["text"] = msg.content;
+            contentArray.append(textPart);
+
+            QJsonObject imagePart;
+            imagePart["type"] = "image_url";
+            QJsonObject imageUrlObj;
+            imageUrlObj["url"] = msg.imageUrl;
+            imagePart["image_url"] = imageUrlObj;
+            contentArray.append(imagePart);
+
+            jsonMsg["content"] = contentArray;
+        } else {
+            jsonMsg["content"] = msg.content;
+        }
+
         jsonMessages.append(jsonMsg);
     }
+
+    if (m_temperature > 0) {
+        payload["temperature"] = m_temperature;
+    }
+
+    if (m_maxTokens > 0) {
+        payload["max_tokens"] = m_maxTokens;
+    }
+
+    if (m_webSearch) {
+        QJsonObject veniceParams;
+        veniceParams["enable_web_search"] = "auto";
+        payload["venice_parameters"] = veniceParams;
+    }
+
     payload["messages"] = jsonMessages;
 
     QJsonDocument doc(payload);
@@ -173,7 +239,7 @@ void ChatRequestWorker::execute()
             return;
         }
 
-        emit responseFinished();
+        emit responseFinished(static_cast<int>(QDateTime::currentMSecsSinceEpoch() - m_startTime));
     } else {
         auto res = cli.Post("/api/v1/chat/completions", headers, body, "application/json");
 
@@ -227,7 +293,8 @@ void ChatRequestWorker::execute()
                     totalTokens = usage["total_tokens"].toInt();
                 }
 
-                emit responseReceived(content, promptTokens, completionTokens, totalTokens);
+                int responseTime = static_cast<int>(QDateTime::currentMSecsSinceEpoch() - m_startTime);
+                emit responseReceived(content, promptTokens, completionTokens, totalTokens, responseTime);
             } else {
                 emit errorOccurred("Empty choices in response");
             }

@@ -26,10 +26,16 @@
 #include <QGraphicsOpacityEffect>
 #include <QPropertyAnimation>
 #include <QPen>
-#include <QShortcut>
 #include <QFileDialog>
 #include <QFile>
 #include <QTextStream>
+#include <QPalette>
+#include <QDialog>
+#include <QFormLayout>
+#include <QSpinBox>
+#include <QDoubleSpinBox>
+#include <QSlider>
+#include <QPixmap>
 #include <QRegularExpression>
 
 AvatarLabel::AvatarLabel(const QString &role, QWidget *parent)
@@ -130,6 +136,20 @@ ChatListItem::ChatListItem(const QString &title, int index, QWidget *parent)
     connect(m_deleteBtn, &QToolButton::clicked, [this]() {
         emit deleteClicked(m_index);
     });
+
+    setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(this, &QWidget::customContextMenuRequested, [this](const QPoint &pos) {
+        QMenu menu(this);
+    QAction *renameAction = menu.addAction("Rename");
+    QAction *pinAction = menu.addAction(m_chatSessions[row].pinned ? "Unpin" : "Pin");
+    QAction *chosen = menu.exec(mapToGlobal(pos));
+    if (chosen == renameAction) {
+        emit renameRequested(m_index);
+    } else if (chosen == pinAction) {
+        emit pinRequested(m_index);
+    }
+}
+    });
 }
 
 void ChatListItem::enterEvent(QEvent *event)
@@ -155,7 +175,7 @@ void ChatListItem::mousePressEvent(QMouseEvent *event)
 }
 
 ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QWidget *parent)
-    : QWidget(parent), m_role(role), m_fullContent(content), m_copyBtn(nullptr), m_streamLabel(nullptr), m_tokenLabel(nullptr), m_isStreaming(false)
+    : QWidget(parent), m_role(role), m_fullContent(content), m_copyBtn(nullptr), m_streamLabel(nullptr), m_tokenLabel(nullptr), m_regenerateBtn(nullptr), m_branchBtn(nullptr), m_editBtn(nullptr), m_editField(nullptr), m_messageIndex(-1), m_isStreaming(false)
 {
     m_outerLayout = new QVBoxLayout(this);
     m_outerLayout->setContentsMargins(0, 8, 0, 8);
@@ -219,23 +239,60 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
     m_copyBtn->setMaximumWidth(50);
     copyLayout->addWidget(m_copyBtn);
 
-    connect(m_copyBtn, &QPushButton::clicked, [this]() {
-        QClipboard *clipboard = QApplication::clipboard();
-        clipboard->setText(m_fullContent);
-        m_copyBtn->setText("Copied!");
-        QTimer::singleShot(1500, [this]() { m_copyBtn->setText("Copy"); });
+    m_regenerateBtn = new QPushButton("Regenerate", m_card);
+    m_regenerateBtn->setStyleSheet(
+        "QPushButton { "
+        "  background-color: #404040; "
+        "  color: #ececf1; "
+        "  border: none; "
+        "  border-radius: 4px; "
+        "  padding: 4px 10px; "
+        "  font-size: 11px; "
+        "} "
+        "QPushButton:hover { background-color: #505050; }"
+    );
+    m_regenerateBtn->setMaximumWidth(80);
+    m_regenerateBtn->setVisible(false);
+    copyLayout->addWidget(m_regenerateBtn);
+    connect(m_regenerateBtn, &QPushButton::clicked, this, &ChatMessageCard::regenerateRequested);
+
+    m_branchBtn = new QPushButton("Branch", m_card);
+    m_branchBtn->setStyleSheet(
+        "QPushButton { "
+        "  background-color: #404040; "
+        "  color: #ececf1; "
+        "  border: none; "
+        "  border-radius: 4px; "
+        "  padding: 4px 10px; "
+        "  font-size: 11px; "
+        "} "
+        "QPushButton:hover { background-color: #505050; }"
+    );
+    m_branchBtn->setMaximumWidth(60);
+    m_branchBtn->setVisible(false);
+    copyLayout->addWidget(m_branchBtn);
+    connect(m_branchBtn, &QPushButton::clicked, [this]() {
+        emit branchRequested(m_messageIndex);
     });
 
-    m_tokenLabel = new QLabel(m_card);
-    m_tokenLabel->setStyleSheet(
-        "QLabel { "
-        "  color: #8e8e8e; "
+    m_editBtn = new QPushButton("Edit", m_card);
+    m_editBtn->setStyleSheet(
+        "QPushButton { "
+        "  background-color: #404040; "
+        "  color: #ececf1; "
+        "  border: none; "
+        "  border-radius: 4px; "
+        "  padding: 4px 10px; "
         "  font-size: 11px; "
-        "  padding-top: 4px; "
-        "}"
+        "} "
+        "QPushButton:hover { background-color: #505050; }"
     );
-    m_tokenLabel->setVisible(false);
-    m_layout->addWidget(m_tokenLabel);
+    m_editBtn->setMaximumWidth(50);
+    m_editBtn->setVisible(false);
+    copyLayout->addWidget(m_editBtn);
+    connect(m_editBtn, &QPushButton::clicked, [this]() {
+        startEditing();
+    });
 
     m_layout->addWidget(m_copyContainer);
 
@@ -308,14 +365,112 @@ void ChatMessageCard::showCopyButton(bool show)
     }
 }
 
-void ChatMessageCard::setTokenInfo(int promptTokens, int completionTokens, int totalTokens)
+void ChatMessageCard::setTokenInfo(int promptTokens, int completionTokens, int totalTokens, int responseTimeMs)
 {
     if (totalTokens > 0 && m_tokenLabel) {
-        QString text = QString("Tokens: %1 prompt, %2 completion, %3 total")
-            .arg(promptTokens).arg(completionTokens).arg(totalTokens);
+        QString text = QString("Tokens: %1 prompt, %2 completion, %3 total").arg(promptTokens).arg(completionTokens).arg(totalTokens);
+        if (responseTimeMs > 0) {
+            text += QString(" | %.1fs").arg(responseTimeMs / 1000.0);
+        }
         m_tokenLabel->setText(text);
         m_tokenLabel->setVisible(true);
     }
+}
+
+void ChatMessageCard::setMessageIndex(int index)
+{
+    m_messageIndex = index;
+}
+
+void ChatMessageCard::showRegenerateButton(bool show)
+{
+    if (m_regenerateBtn) {
+        m_regenerateBtn->setVisible(show);
+    }
+}
+
+void ChatMessageCard::showBranchButton(bool show)
+{
+    if (m_branchBtn) {
+        m_branchBtn->setVisible(show);
+    }
+}
+
+void ChatMessageCard::setEditable(bool editable)
+{
+    if (m_editBtn) {
+        m_editBtn->setVisible(editable);
+    }
+}
+
+void ChatMessageCard::startEditing()
+{
+    if (m_editField) return;
+
+    m_editField = new QTextEdit(m_card);
+    m_editField->setPlainText(m_fullContent);
+    m_editField->setMaximumHeight(150);
+    m_editField->setStyleSheet(
+        "QTextEdit { "
+        "  background-color: #1a1a1a; "
+        "  color: #ececf1; "
+        "  border: 1px solid #4d4d4f; "
+        "  border-radius: 6px; "
+        "  padding: 8px; "
+        "  font-size: 14px; "
+        "}"
+    );
+
+    QHBoxLayout *editBtnLayout = new QHBoxLayout();
+    editBtnLayout->setContentsMargins(0, 4, 0, 0);
+    editBtnLayout->addStretch();
+
+    QPushButton *saveBtn = new QPushButton("Save", m_card);
+    saveBtn->setStyleSheet(
+        "QPushButton { "
+        "  background-color: #005c4b; "
+        "  color: #ececf1; "
+        "  border: none; "
+        "  border-radius: 4px; "
+        "  padding: 4px 12px; "
+        "  font-size: 11px; "
+        "} "
+        "QPushButton:hover { background-color: #007a5e; }"
+    );
+    QPushButton *cancelBtn = new QPushButton("Cancel", m_card);
+    cancelBtn->setStyleSheet(
+        "QPushButton { "
+        "  background-color: #404040; "
+        "  color: #ececf1; "
+        "  border: none; "
+        "  border-radius: 4px; "
+        "  padding: 4px 12px; "
+        "  font-size: 11px; "
+        "} "
+        "QPushButton:hover { background-color: #505050; }"
+    );
+    editBtnLayout->addWidget(cancelBtn);
+    editBtnLayout->addWidget(saveBtn);
+
+    m_layout->insertWidget(0, m_editField);
+    m_layout->insertLayout(1, editBtnLayout);
+
+    connect(saveBtn, &QPushButton::clicked, [this]() {
+        QString newContent = m_editField->toPlainText().trimmed();
+        if (!newContent.isEmpty()) {
+            emit editRequested(m_messageIndex, newContent);
+        }
+    });
+    connect(cancelBtn, &QPushButton::clicked, [this]() {
+        m_layout->removeWidget(m_editField);
+        delete m_editField;
+        m_editField = nullptr;
+        QLayoutItem *item = m_layout->takeAt(1);
+        if (item) {
+            delete item->layout();
+            delete item;
+        }
+    });
 }
 
 void ChatMessageCard::rebuildContent()
@@ -515,6 +670,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_currentChatIndex(-1)
     , m_settings("lagmajin", "SimpleAIClient")
     , m_streamingCard(nullptr)
+    , m_currentChatImage("")
+    , m_imagePreview(nullptr)
 {
     setWindowTitle("SimpleAIClient");
     resize(1200, 800);
@@ -539,6 +696,7 @@ MainWindow::MainWindow(QWidget *parent)
     new QShortcut(QKeySequence("Ctrl+E"), this, SLOT(onExportChat()));
     new QShortcut(QKeySequence("Ctrl+,"), this, SLOT(onSettings()));
 
+    connect(m_attachButton, &QToolButton::clicked, this, &MainWindow::onAttachImage);
     connect(m_sendButton, &QToolButton::clicked, this, &MainWindow::onSendMessage);
     connect(m_apiClient, &ApiClient::responseReceived, this, &MainWindow::onResponseReceived);
     connect(m_apiClient, &ApiClient::responseChunk, this, &MainWindow::onResponseChunk);
@@ -611,193 +769,21 @@ void MainWindow::setupUI()
         "}"
     );
 
-    m_sendButton->setIcon(style()->standardIcon(QStyle::SP_ArrowRight));
-    m_sendButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
-
-    m_sidebar = new QWidget(this);
-    m_sidebar->setMinimumWidth(240);
-    m_sidebar->setMaximumWidth(320);
-    m_sidebar->setStyleSheet("background-color: #171717; color: #ececf1;");
-
-    QVBoxLayout *sidebarLayout = new QVBoxLayout(m_sidebar);
-    sidebarLayout->setContentsMargins(12, 16, 12, 10);
-    sidebarLayout->setSpacing(8);
-
-    m_appTitle = new QLabel("SimpleAIClient", m_sidebar);
-    m_appTitle->setStyleSheet(
-        "QLabel { "
-        "  color: #ececf1; "
-        "  font-size: 18px; "
-        "  font-weight: bold; "
-        "  padding: 8px 4px; "
-        "}"
-    );
-    sidebarLayout->addWidget(m_appTitle);
-
-    QFrame *sidebarDivider = new QFrame(m_sidebar);
-    sidebarDivider->setFrameShape(QFrame::HLine);
-    sidebarDivider->setStyleSheet("QFrame { color: #3a3a3a; background-color: #3a3a3a; }");
-    sidebarDivider->setMaximumHeight(1);
-    sidebarLayout->addWidget(sidebarDivider);
-
-    m_searchField = new QLineEdit(m_sidebar);
-    m_searchField->setPlaceholderText("Search chats...");
-    m_searchField->setStyleSheet(
-        "QLineEdit { "
-        "  background-color: #2f2f2f; "
-        "  color: #ececf1; "
-        "  border: 1px solid #4d4d4f; "
-        "  border-radius: 6px; "
-        "  padding: 6px 10px; "
-        "  font-size: 13px; "
-        "} "
-        "QLineEdit:focus { border: 1px solid #005c4b; }"
-    );
-    connect(m_searchField, &QLineEdit::textChanged, this, &MainWindow::filterChats);
-    sidebarLayout->addWidget(m_searchField);
-
-    connect(m_inputField, &QTextEdit::textChanged, this, &MainWindow::saveDraft);
-
-    m_newChatButton->setStyleSheet(
-        "QPushButton { "
+    m_attachButton = new QToolButton;
+    m_attachButton->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
+    m_attachButton->setFixedSize(36, 36);
+    m_attachButton->setStyleSheet(
+        "QToolButton { "
         "  background-color: transparent; "
-        "  color: #ececf1; "
-        "  border: 1px solid #4d4d4f; "
-        "  border-radius: 8px; "
-        "  padding: 10px; "
-        "  text-align: left; "
-        "  font-size: 14px; "
+        "  border: none; "
+        "  padding: 6px; "
         "} "
-        "QPushButton:hover { background-color: #2a2b32; }"
+        "QToolButton:hover { background-color: #404040; border-radius: 18px; }"
     );
-    sidebarLayout->addWidget(m_newChatButton);
+    m_attachButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    connect(m_attachButton, &QToolButton::clicked, this, &MainWindow::onAttachImage);
 
-    m_chatListContainer = new QWidget();
-    m_chatListContainer->setStyleSheet("background-color: transparent;");
-    QVBoxLayout *chatListLayout = new QVBoxLayout(m_chatListContainer);
-    chatListLayout->setContentsMargins(0, 0, 0, 0);
-    chatListLayout->setSpacing(2);
-    chatListLayout->addStretch();
-
-    m_chatListScroll = new QScrollArea(m_sidebar);
-    m_chatListScroll->setWidget(m_chatListContainer);
-    m_chatListScroll->setWidgetResizable(true);
-    m_chatListScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_chatListScroll->setStyleSheet("QScrollArea { border: none; background-color: transparent; }" + scrollbarStyle);
-    sidebarLayout->addWidget(m_chatListScroll, 1);
-
-    m_splitter = new QSplitter(Qt::Horizontal, this);
-    m_splitter->addWidget(m_sidebar);
-
-    QWidget *mainPanel = new QWidget(this);
-    QVBoxLayout *mainLayout = new QVBoxLayout(mainPanel);
-    mainLayout->setContentsMargins(0, 0, 0, 0);
-    mainLayout->setSpacing(0);
-
-    QHBoxLayout *topBar = new QHBoxLayout();
-    topBar->addWidget(m_modelCombo);
-
-    m_uncensoredFilter = new QCheckBox("Uncensored only", this);
-    m_uncensoredFilter->setStyleSheet(
-        "QCheckBox { "
-        "  color: #ececf1; "
-        "  font-size: 14px; "
-        "  spacing: 6px; "
-        "} "
-        "QCheckBox::indicator { "
-        "  width: 16px; "
-        "  height: 16px; "
-        "  border-radius: 4px; "
-        "  border: 1px solid #4d4d4f; "
-        "  background-color: #2f2f2f; "
-        "} "
-        "QCheckBox::indicator:checked { "
-        "  background-color: #005c4b; "
-        "  border: 1px solid #005c4b; "
-        "}"
-    );
-    m_uncensoredFilter->setChecked(m_settings.value("uncensoredFilter", false).toBool());
-    connect(m_uncensoredFilter, &QCheckBox::toggled, this, [this]() {
-        m_settings.setValue("uncensoredFilter", m_uncensoredFilter->isChecked());
-        applyModelFilter();
-    });
-    topBar->addWidget(m_uncensoredFilter);
-
-    m_streamToggle = new QCheckBox("Stream", this);
-    m_streamToggle->setStyleSheet(m_uncensoredFilter->styleSheet());
-    m_streamToggle->setChecked(m_settings.value("streamMode", true).toBool());
-    m_apiClient->setStreaming(m_streamToggle->isChecked());
-    connect(m_streamToggle, &QCheckBox::toggled, this, [this](bool checked) {
-        m_settings.setValue("streamMode", checked);
-        m_apiClient->setStreaming(checked);
-    });
-    topBar->addWidget(m_streamToggle);
-
-    topBar->addStretch();
-    topBar->setContentsMargins(16, 12, 16, 8);
-    mainLayout->addLayout(topBar);
-
-    QFrame *topBarDivider = new QFrame(mainPanel);
-    topBarDivider->setFrameShape(QFrame::HLine);
-    topBarDivider->setStyleSheet("QFrame { color: #3a3a3a; background-color: #3a3a3a; }");
-    topBarDivider->setMaximumHeight(1);
-    mainLayout->addWidget(topBarDivider);
-
-    m_scrollArea = new QScrollArea(mainPanel);
-    m_scrollArea->setWidgetResizable(true);
-    m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_scrollArea->setStyleSheet("QScrollArea { border: none; background-color: #212121; }" + scrollbarStyle);
-
-    m_chatContainer = new QWidget();
-    m_chatContainer->setStyleSheet("background-color: #212121;");
-    m_chatLayout = new QVBoxLayout(m_chatContainer);
-    m_chatLayout->setContentsMargins(32, 20, 32, 20);
-    m_chatLayout->setSpacing(4);
-
-    m_welcomeWidget = new QWidget(m_chatContainer);
-    QVBoxLayout *welcomeLayout = new QVBoxLayout(m_welcomeWidget);
-    welcomeLayout->setAlignment(Qt::AlignCenter);
-    welcomeLayout->setSpacing(16);
-
-    QLabel *welcomeTitle = new QLabel("SimpleAIClient", m_welcomeWidget);
-    welcomeTitle->setStyleSheet(
-        "QLabel { "
-        "  color: #ececf1; "
-        "  font-size: 28px; "
-        "  font-weight: bold; "
-        "}"
-    );
-    welcomeTitle->setAlignment(Qt::AlignCenter);
-    welcomeLayout->addWidget(welcomeTitle);
-
-    QLabel *welcomeSubtitle = new QLabel("How can I help you today?", m_welcomeWidget);
-    welcomeSubtitle->setStyleSheet(
-        "QLabel { "
-        "  color: #8e8e8e; "
-        "  font-size: 16px; "
-        "}"
-    );
-    welcomeSubtitle->setAlignment(Qt::AlignCenter);
-    welcomeLayout->addWidget(welcomeSubtitle);
-
-    m_chatLayout->addWidget(m_welcomeWidget, 0, Qt::AlignCenter);
-    m_chatLayout->addStretch();
-
-    m_scrollArea->setWidget(m_chatContainer);
-    mainLayout->addWidget(m_scrollArea, 1);
-
-    QFrame *inputFrame = new QFrame(mainPanel);
-    inputFrame->setStyleSheet("QFrame { background-color: #212121; }");
-    QHBoxLayout *inputLayout = new QHBoxLayout(inputFrame);
-    inputLayout->setContentsMargins(40, 12, 40, 16);
-
-    QWidget *inputWrapper = new QWidget(inputFrame);
-    inputWrapper->setMaximumWidth(800);
-    inputWrapper->setStyleSheet("background-color: #2f2f2f; border: 1px solid #4d4d4f; border-radius: 24px;");
-    QHBoxLayout *inputInner = new QHBoxLayout(inputWrapper);
-    inputInner->setContentsMargins(12, 6, 6, 6);
-    inputInner->setSpacing(4);
-
+    m_sendButton->setIcon(style()->standardIcon(QStyle::SP_ArrowRight));
     m_sendButton->setFixedSize(40, 40);
     m_sendButton->setStyleSheet(
         "QToolButton { "
@@ -811,8 +797,23 @@ void MainWindow::setupUI()
         "QToolButton:disabled { background-color: #404040; }"
     );
 
+    inputInner->addWidget(m_attachButton, 0, Qt::AlignBottom);
     inputInner->addWidget(m_inputField, 1);
     inputInner->addWidget(m_sendButton, 0, Qt::AlignBottom);
+
+    m_imagePreview = new QLabel(inputFrame);
+    m_imagePreview->setMaximumHeight(60);
+    m_imagePreview->setMaximumWidth(200);
+    m_imagePreview->setScaledContents(true);
+    m_imagePreview->setStyleSheet("QLabel { border: 1px solid #4d4d4f; border-radius: 8px; padding: 4px; }");
+    m_imagePreview->setVisible(false);
+    m_imagePreview->setAlignment(Qt::AlignCenter);
+
+    QVBoxLayout *inputWrapperLayout = new QVBoxLayout(inputWrapper);
+    inputWrapperLayout->setContentsMargins(0, 0, 0, 0);
+    inputWrapperLayout->setSpacing(4);
+    inputWrapperLayout->addWidget(m_imagePreview, 0, Qt::AlignLeft);
+    inputWrapperLayout->addLayout(inputInner);
 
     inputLayout->addStretch();
     inputLayout->addWidget(inputWrapper);
@@ -839,10 +840,15 @@ void MainWindow::setupUI()
     m_statusConnection = new QLabel("Ready", m_statusBar);
     m_statusModel = new QLabel(m_statusBar);
     m_statusTokens = new QLabel(m_statusBar);
+    m_statusResponseTime = new QLabel(m_statusBar);
 
     m_statusBar->addWidget(m_statusConnection, 1);
-    m_statusBar->addPermanentWidget(m_statusModel);
+    m_statusBar->addPermanentWidget(m_statusResponseTime);
     m_statusBar->addPermanentWidget(m_statusTokens);
+    m_statusBar->addPermanentWidget(m_statusModel);
+
+    m_isDarkTheme = m_settings.value("darkTheme", true).toBool();
+    applyTheme();
 }
 
 void MainWindow::setupMenu()
@@ -864,6 +870,20 @@ void MainWindow::setupMenu()
     QAction *exportAction = fileMenu->addAction("Export Chat...");
     exportAction->setShortcut(QKeySequence("Ctrl+E"));
     connect(exportAction, &QAction::triggered, this, &MainWindow::onExportChat);
+
+    QAction *themeAction = fileMenu->addAction("Toggle Theme");
+    themeAction->setShortcut(QKeySequence("Ctrl+T"));
+    connect(themeAction, &QAction::triggered, this, &MainWindow::onToggleTheme);
+
+    QAction *advancedAction = fileMenu->addAction("Advanced Settings...");
+    advancedAction->setShortcut(QKeySequence("Ctrl+Shift+S"));
+    connect(advancedAction, &QAction::triggered, this, &MainWindow::onAdvancedSettings);
+
+    fileMenu->addSeparator();
+
+    QAction *quitAction = fileMenu->addAction("Quit");
+    quitAction->setShortcut(QKeySequence("Ctrl+Q"));
+    connect(quitAction, &QAction::triggered, this, &QMainWindow::close);
 }
 
 void MainWindow::loadSettings()
@@ -879,6 +899,18 @@ void MainWindow::loadSettings()
     if (m_statusModel) {
         m_statusModel->setText(model);
     }
+
+    QString systemPrompt = m_settings.value("systemPrompt").toString();
+    m_apiClient->setSystemPrompt(systemPrompt);
+
+    double temperature = m_settings.value("temperature", 0.7).toDouble();
+    m_apiClient->setTemperature(temperature);
+
+    int maxTokens = m_settings.value("maxTokens", 0).toInt();
+    m_apiClient->setMaxTokens(maxTokens);
+
+    bool webSearch = m_settings.value("webSearch", false).toBool();
+    m_apiClient->setWebSearch(webSearch);
 }
 
 void MainWindow::fetchModels()
@@ -911,6 +943,7 @@ void MainWindow::createNewChat()
     ChatSession newChat;
     newChat.id = QString::number(QDateTime::currentMSecsSinceEpoch());
     newChat.title = "New Chat";
+    newChat.pinned = false;
     m_chatSessions.prepend(newChat);
     m_currentChatIndex = 0;
     clearChatDisplay();
@@ -933,9 +966,13 @@ void MainWindow::switchToChat(int index)
         showWelcomeScreen();
     } else {
         hideWelcomeScreen();
-        for (const auto &msg : chat.messages) {
-            addMessageCard(msg.role, msg.content, msg.promptTokens, msg.completionTokens, msg.totalTokens);
+    for (const auto &msg : chat.messages) {
+        QString displayText = msg.content;
+        if (!msg.imageUrl.isEmpty()) {
+            displayText += "\n[Image attached]";
         }
+        addMessageCard(msg.role, displayText, msg.promptTokens, msg.completionTokens, msg.totalTokens);
+    }
     }
 
     loadDraft();
@@ -962,23 +999,41 @@ void MainWindow::filterChats(const QString &query)
     }
 
     QString lowerQuery = query.toLower();
+
+    QList<int> pinnedIndices;
+    QList<int> unpinnedIndices;
     for (int i = 0; i < m_chatSessions.size(); ++i) {
         if (!lowerQuery.isEmpty() && !m_chatSessions[i].title.toLower().contains(lowerQuery)) {
             continue;
         }
+        if (m_chatSessions[i].pinned) {
+            pinnedIndices.append(i);
+        } else {
+            unpinnedIndices.append(i);
+        }
+    }
 
-        ChatListItem *chatItem = new ChatListItem(m_chatSessions[i].title, i, m_chatListContainer);
-        if (i == m_currentChatIndex) {
+    QList<int> orderedIndices = pinnedIndices + unpinnedIndices;
+
+    for (int idx : orderedIndices) {
+        ChatListItem *chatItem = new ChatListItem(m_chatSessions[idx].title, idx, m_chatListContainer);
+        if (idx == m_currentChatIndex) {
             chatItem->setStyleSheet("QWidget { background-color: #2a2b32; border-radius: 6px; }");
         }
         layout->insertWidget(layout->count(), chatItem);
 
-        connect(chatItem, &ChatListItem::clicked, this, [this, i]() {
-            switchToChat(i);
+        connect(chatItem, &ChatListItem::clicked, this, [this, idx]() {
+            switchToChat(idx);
             updateChatList();
         });
-        connect(chatItem, &ChatListItem::deleteClicked, this, [this, i]() {
-            deleteChatAtRow(i);
+        connect(chatItem, &ChatListItem::deleteClicked, this, [this, idx]() {
+            deleteChatAtRow(idx);
+        });
+        connect(chatItem, &ChatListItem::renameRequested, this, [this, idx]() {
+            renameChat(idx);
+        });
+        connect(chatItem, &ChatListItem::pinRequested, this, [this, idx]() {
+            togglePinChat(idx);
         });
     }
 
@@ -992,6 +1047,7 @@ void MainWindow::saveChatSessions()
         QJsonObject sessionObj;
         sessionObj["id"] = chat.id;
         sessionObj["title"] = chat.title;
+        sessionObj["pinned"] = chat.pinned;
 
         QJsonArray messagesArray;
         for (const auto &msg : chat.messages) {
@@ -1001,6 +1057,7 @@ void MainWindow::saveChatSessions()
             msgObj["promptTokens"] = msg.promptTokens;
             msgObj["completionTokens"] = msg.completionTokens;
             msgObj["totalTokens"] = msg.totalTokens;
+            msgObj["imageUrl"] = msg.imageUrl;
             messagesArray.append(msgObj);
         }
         sessionObj["messages"] = messagesArray;
@@ -1025,11 +1082,12 @@ void MainWindow::loadChatSessions()
         ChatSession chat;
         chat.id = sessionObj["id"].toString();
         chat.title = sessionObj["title"].toString();
+        chat.pinned = sessionObj["pinned"].toBool();
 
         QJsonArray messagesArray = sessionObj["messages"].toArray();
         for (const auto &msgVal : messagesArray) {
             QJsonObject msgObj = msgVal.toObject();
-            chat.messages.append({msgObj["role"].toString(), msgObj["content"].toString(), msgObj["promptTokens"].toInt(), msgObj["completionTokens"].toInt(), msgObj["totalTokens"].toInt()});
+            chat.messages.append({msgObj["role"].toString(), msgObj["content"].toString(), msgObj["promptTokens"].toInt(), msgObj["completionTokens"].toInt(), msgObj["totalTokens"].toInt(), msgObj["imageUrl"].toString()});
         }
         m_chatSessions.append(chat);
     }
@@ -1061,15 +1119,32 @@ void MainWindow::clearChatDisplay()
     m_streamingCard = nullptr;
 }
 
-void MainWindow::addMessageCard(const QString &role, const QString &content, int promptTokens, int completionTokens, int totalTokens)
+void MainWindow::addMessageCard(const QString &role, const QString &content, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs)
 {
     hideWelcomeScreen();
 
     m_chatLayout->removeItem(m_chatLayout->itemAt(m_chatLayout->count() - 1));
     ChatMessageCard *card = new ChatMessageCard(role, content, m_chatContainer);
     card->showCopyButton(true);
+
+    int msgIndex = -1;
+    if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
+        msgIndex = m_chatSessions[m_currentChatIndex].messages.size();
+    }
+    card->setMessageIndex(msgIndex);
+
+    if (role == "assistant") {
+        card->showRegenerateButton(true);
+        card->showBranchButton(true);
+        connect(card, &ChatMessageCard::regenerateRequested, this, &MainWindow::onRegenerateResponse);
+        connect(card, &ChatMessageCard::branchRequested, this, &MainWindow::onBranchConversation);
+    } else if (role == "user") {
+        card->setEditable(true);
+        connect(card, &ChatMessageCard::editRequested, this, &MainWindow::onEditMessage);
+    }
+
     if (totalTokens > 0) {
-        card->setTokenInfo(promptTokens, completionTokens, totalTokens);
+        card->setTokenInfo(promptTokens, completionTokens, totalTokens, responseTimeMs);
     }
 
     QGraphicsOpacityEffect *opacityEffect = new QGraphicsOpacityEffect(card);
@@ -1128,10 +1203,34 @@ void MainWindow::applyModelFilter()
     m_apiClient->setModel(m_modelCombo->currentText());
 }
 
+void MainWindow::onAttachImage()
+{
+    QString filePath = QFileDialog::getOpenFileName(this, "Select Image", "", "Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp)");
+    if (filePath.isEmpty()) return;
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, "Error", "Could not open image file.");
+        return;
+    }
+
+    QByteArray data = file.readAll();
+    QString base64 = QString("data:image/jpeg;base64,") + data.toBase64();
+    m_currentChatImage = base64;
+
+    QPixmap pixmap;
+    pixmap.load(filePath);
+    if (!pixmap.isNull()) {
+        m_imagePreview->setPixmap(pixmap.scaled(200, 60, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        m_imagePreview->setVisible(true);
+    }
+}
+
 void MainWindow::onSendMessage()
 {
     QString text = m_inputField->toPlainText().trimmed();
-    if (text.isEmpty() || !checkApiKey()) return;
+    if (text.isEmpty() && m_currentChatImage.isEmpty()) return;
+    if (!checkApiKey()) return;
 
     clearDraft();
 
@@ -1140,10 +1239,19 @@ void MainWindow::onSendMessage()
     }
 
     m_inputField->clear();
-    addMessageCard("user", text);
 
-    ChatMessage userMsg{"user", text, 0, 0, 0};
+    QString displayText = text;
+    if (!m_currentChatImage.isEmpty()) {
+        displayText += "\n[Image attached]";
+    }
+    addMessageCard("user", displayText);
+
+    ChatMessage userMsg{"user", text, 0, 0, 0, m_currentChatImage};
     m_chatSessions[m_currentChatIndex].messages.append(userMsg);
+
+    m_currentChatImage.clear();
+    m_imagePreview->setVisible(false);
+    m_imagePreview->clear();
 
     if (m_chatSessions[m_currentChatIndex].messages.size() == 1) {
         m_chatSessions[m_currentChatIndex].title = generateChatTitle(text);
@@ -1177,7 +1285,7 @@ void MainWindow::onSendMessage()
     scrollToBottom();
 }
 
-void MainWindow::onResponseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens)
+void MainWindow::onResponseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs)
 {
     if (m_streamingCard) {
         m_chatLayout->removeWidget(m_streamingCard);
@@ -1185,7 +1293,7 @@ void MainWindow::onResponseReceived(const QString &response, int promptTokens, i
         m_streamingCard = nullptr;
     }
 
-    addMessageCard("assistant", response, promptTokens, completionTokens, totalTokens);
+    addMessageCard("assistant", response, promptTokens, completionTokens, totalTokens, responseTimeMs);
 
     ChatMessage assistantMsg{"assistant", response, promptTokens, completionTokens, totalTokens};
     m_chatSessions[m_currentChatIndex].messages.append(assistantMsg);
@@ -1195,6 +1303,9 @@ void MainWindow::onResponseReceived(const QString &response, int promptTokens, i
     }
     if (m_statusTokens && totalTokens > 0) {
         m_statusTokens->setText(QString("%1 tokens").arg(totalTokens));
+    }
+    if (m_statusResponseTime && responseTimeMs > 0) {
+        m_statusResponseTime->setText(QString("%.1fs").arg(responseTimeMs / 1000.0));
     }
 
     m_sendButton->setEnabled(true);
@@ -1217,7 +1328,7 @@ void MainWindow::onResponseChunk(const QString &chunk)
     }
 }
 
-void MainWindow::onResponseFinished()
+void MainWindow::onResponseFinished(int responseTimeMs)
 {
     if (m_streamingCard) {
         m_streamingCard->setStreaming(false);
@@ -1231,6 +1342,9 @@ void MainWindow::onResponseFinished()
 
     if (m_statusConnection) {
         m_statusConnection->setText("Ready");
+    }
+    if (m_statusResponseTime && responseTimeMs > 0) {
+        m_statusResponseTime->setText(QString("%.1fs").arg(responseTimeMs / 1000.0));
     }
 
     m_sendButton->setEnabled(true);
@@ -1314,6 +1428,214 @@ void MainWindow::onExportChat()
     QMessageBox::information(this, "Export Complete", "Chat exported to:\n" + filePath);
 }
 
+void MainWindow::onToggleTheme()
+{
+    m_isDarkTheme = !m_isDarkTheme;
+    m_settings.setValue("darkTheme", m_isDarkTheme);
+    applyTheme();
+}
+
+void MainWindow::onRegenerateResponse()
+{
+    if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return;
+
+    auto &messages = m_chatSessions[m_currentChatIndex].messages;
+    if (messages.isEmpty()) return;
+
+    if (messages.last().role == "assistant") {
+        messages.removeLast();
+    }
+
+    if (messages.isEmpty()) return;
+
+    clearChatDisplay();
+    for (const auto &msg : messages) {
+        QString displayText = msg.content;
+        if (!msg.imageUrl.isEmpty()) {
+            displayText += "\n[Image attached]";
+        }
+        addMessageCard(msg.role, displayText, msg.promptTokens, msg.completionTokens, msg.totalTokens);
+    }
+
+    m_sendButton->setEnabled(false);
+    m_inputField->setEnabled(false);
+
+    m_streamingCard = new ChatMessageCard("assistant", "", m_chatContainer);
+    m_streamingCard->setStreaming(true);
+    m_chatLayout->removeItem(m_chatLayout->itemAt(m_chatLayout->count() - 1));
+    m_chatLayout->addWidget(m_streamingCard);
+    m_chatLayout->addStretch();
+
+    m_apiClient->sendMessage(messages);
+    saveChatSessions();
+
+    scrollToBottom();
+}
+
+void MainWindow::onBranchConversation(int messageIndex)
+{
+    if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return;
+
+    const auto &sourceChat = m_chatSessions[m_currentChatIndex];
+    if (messageIndex < 0 || messageIndex >= sourceChat.messages.size()) return;
+
+    ChatSession newChat;
+    newChat.id = QString::number(QDateTime::currentMSecsSinceEpoch());
+    newChat.title = sourceChat.title + " (branch)";
+    newChat.pinned = false;
+
+    for (int i = 0; i <= messageIndex; ++i) {
+        newChat.messages.append(sourceChat.messages[i]);
+    }
+
+    m_chatSessions.prepend(newChat);
+    m_currentChatIndex = 0;
+
+    clearChatDisplay();
+    for (const auto &msg : newChat.messages) {
+        QString displayText = msg.content;
+        if (!msg.imageUrl.isEmpty()) {
+            displayText += "\n[Image attached]";
+        }
+        addMessageCard(msg.role, displayText, msg.promptTokens, msg.completionTokens, msg.totalTokens);
+    }
+
+    updateChatList();
+    saveChatSessions();
+    scrollToBottom();
+}
+
+void MainWindow::onEditMessage(int messageIndex, const QString &newContent)
+{
+    if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return;
+
+    auto &messages = m_chatSessions[m_currentChatIndex].messages;
+    if (messageIndex < 0 || messageIndex >= messages.size()) return;
+
+    messages[messageIndex].content = newContent;
+
+    for (int i = messages.size() - 1; i > messageIndex; --i) {
+        if (messages[i].role == "assistant" || messages[i].role == "user") {
+            messages.removeAt(i);
+        }
+    }
+
+    clearChatDisplay();
+    for (const auto &msg : messages) {
+        QString displayText = msg.content;
+        if (!msg.imageUrl.isEmpty()) {
+            displayText += "\n[Image attached]";
+        }
+        addMessageCard(msg.role, displayText, msg.promptTokens, msg.completionTokens, msg.totalTokens);
+    }
+
+    m_sendButton->setEnabled(false);
+    m_inputField->setEnabled(false);
+
+    m_streamingCard = new ChatMessageCard("assistant", "", m_chatContainer);
+    m_streamingCard->setStreaming(true);
+    m_chatLayout->removeItem(m_chatLayout->itemAt(m_chatLayout->count() - 1));
+    m_chatLayout->addWidget(m_streamingCard);
+    m_chatLayout->addStretch();
+
+    m_apiClient->sendMessage(messages);
+    saveChatSessions();
+
+    scrollToBottom();
+}
+
+void MainWindow::onAdvancedSettings()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle("Advanced Settings");
+    dialog.setMinimumWidth(400);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    QFormLayout *formLayout = new QFormLayout();
+    formLayout->setSpacing(12);
+
+    QString currentPrompt = m_settings.value("systemPrompt").toString();
+    QTextEdit *systemPromptEdit = new QTextEdit(&dialog);
+    systemPromptEdit->setPlainText(currentPrompt);
+    systemPromptEdit->setMaximumHeight(100);
+    systemPromptEdit->setPlaceholderText("e.g., You are a helpful assistant that speaks in a formal tone...");
+    formLayout->addRow("System Prompt:", systemPromptEdit);
+
+    double currentTemp = m_settings.value("temperature", 0.7).toDouble();
+    QDoubleSpinBox *tempSpin = new QDoubleSpinBox(&dialog);
+    tempSpin->setRange(0.0, 2.0);
+    tempSpin->setSingleStep(0.1);
+    tempSpin->setValue(currentTemp);
+    tempSpin->setToolTip("Controls randomness: 0 = deterministic, 2 = very random");
+    formLayout->addRow("Temperature:", tempSpin);
+
+    int currentMaxTokens = m_settings.value("maxTokens", 0).toInt();
+    QSpinBox *maxTokensSpin = new QSpinBox(&dialog);
+    maxTokensSpin->setRange(0, 32000);
+    maxTokensSpin->setSingleStep(256);
+    maxTokensSpin->setValue(currentMaxTokens);
+    maxTokensSpin->setSpecialValueText("Unlimited");
+    maxTokensSpin->setToolTip("Maximum tokens in response (0 = unlimited)");
+    formLayout->addRow("Max Tokens:", maxTokensSpin);
+
+    layout->addLayout(formLayout);
+
+    QDialogButtonBox *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        m_settings.setValue("systemPrompt", systemPromptEdit->toPlainText());
+        m_settings.setValue("temperature", tempSpin->value());
+        m_settings.setValue("maxTokens", maxTokensSpin->value());
+
+        m_apiClient->setSystemPrompt(systemPromptEdit->toPlainText());
+        m_apiClient->setTemperature(tempSpin->value());
+        m_apiClient->setMaxTokens(maxTokensSpin->value());
+    }
+}
+
+void MainWindow::applyTheme()
+{
+    if (m_isDarkTheme) {
+        qApp->setStyle("Fusion");
+        QPalette darkPalette;
+        darkPalette.setColor(QPalette::Window, QColor(33, 33, 33));
+        darkPalette.setColor(QPalette::WindowText, QColor(236, 236, 241));
+        darkPalette.setColor(QPalette::Base, QColor(47, 47, 47));
+        darkPalette.setColor(QPalette::AlternateBase, QColor(42, 43, 50));
+        darkPalette.setColor(QPalette::ToolTipBase, QColor(47, 47, 47));
+        darkPalette.setColor(QPalette::ToolTipText, QColor(236, 236, 241));
+        darkPalette.setColor(QPalette::Text, QColor(236, 236, 241));
+        darkPalette.setColor(QPalette::Button, QColor(47, 47, 47));
+        darkPalette.setColor(QPalette::ButtonText, QColor(236, 236, 241));
+        darkPalette.setColor(QPalette::BrightText, QColor(236, 236, 241));
+        darkPalette.setColor(QPalette::Link, QColor(96, 165, 250));
+        darkPalette.setColor(QPalette::Highlight, QColor(0, 92, 75));
+        darkPalette.setColor(QPalette::HighlightedText, QColor(236, 236, 241));
+        qApp->setPalette(darkPalette);
+    } else {
+        qApp->setStyle("Fusion");
+        QPalette lightPalette;
+        lightPalette.setColor(QPalette::Window, QColor(245, 245, 245));
+        lightPalette.setColor(QPalette::WindowText, QColor(33, 33, 33));
+        lightPalette.setColor(QPalette::Base, QColor(255, 255, 255));
+        lightPalette.setColor(QPalette::AlternateBase, QColor(230, 230, 230));
+        lightPalette.setColor(QPalette::ToolTipBase, QColor(255, 255, 255));
+        lightPalette.setColor(QPalette::ToolTipText, QColor(33, 33, 33));
+        lightPalette.setColor(QPalette::Text, QColor(33, 33, 33));
+        lightPalette.setColor(QPalette::Button, QColor(255, 255, 255));
+        lightPalette.setColor(QPalette::ButtonText, QColor(33, 33, 33));
+        lightPalette.setColor(QPalette::BrightText, QColor(33, 33, 33));
+        lightPalette.setColor(QPalette::Link, QColor(0, 92, 75));
+        lightPalette.setColor(QPalette::Highlight, QColor(0, 92, 75));
+        lightPalette.setColor(QPalette::HighlightedText, QColor(255, 255, 255));
+        qApp->setPalette(lightPalette);
+    }
+}
+
 void MainWindow::onModelsFetched(const QStringList &models)
 {
     m_allModels = models;
@@ -1368,6 +1690,28 @@ void MainWindow::deleteChatAtRow(int row)
         }
     }
 
+    updateChatList();
+    saveChatSessions();
+}
+
+void MainWindow::renameChat(int row)
+{
+    if (row < 0 || row >= m_chatSessions.size()) return;
+
+    bool ok;
+    QString newName = QInputDialog::getText(this, "Rename Chat", "New name:", QLineEdit::Normal, m_chatSessions[row].title, &ok);
+    if (ok && !newName.isEmpty()) {
+        m_chatSessions[row].title = newName;
+        updateChatList();
+        saveChatSessions();
+    }
+}
+
+void MainWindow::togglePinChat(int row)
+{
+    if (row < 0 || row >= m_chatSessions.size()) return;
+
+    m_chatSessions[row].pinned = !m_chatSessions[row].pinned;
     updateChatList();
     saveChatSessions();
 }

@@ -22,12 +22,14 @@
 #include <QMouseEvent>
 #include <QShortcut>
 #include <QStatusBar>
+#include <QPixmap>
 #include "apiclient.h"
 
 struct ChatSession {
     QString id;
     QString title;
     QList<ChatMessage> messages;
+    bool pinned;
 };
 
 class AvatarLabel : public QLabel {
@@ -44,6 +46,8 @@ public:
 signals:
     void clicked(int index);
     void deleteClicked(int index);
+    void renameRequested(int index);
+    void pinRequested(int index);
 
 protected:
     void enterEvent(QEvent *event) override;
@@ -65,11 +69,21 @@ public:
     void setContent(const QString &content);
     void showCopyButton(bool show);
     void setStreaming(bool streaming);
-    void setTokenInfo(int promptTokens, int completionTokens, int totalTokens);
+    void setTokenInfo(int promptTokens, int completionTokens, int totalTokens, int responseTimeMs = 0);
+    void setMessageIndex(int index);
+    void showRegenerateButton(bool show);
+    void showBranchButton(bool show);
+    void setEditable(bool editable);
+    void startEditing();
     QString content() const { return m_fullContent; }
+    void setContent(const QString &content);
+    void setContent(const QString &content);
 
 signals:
     void copyRequested(const QString &text);
+    void regenerateRequested();
+    void branchRequested(int messageIndex);
+    void editRequested(int messageIndex, const QString &newContent);
 
 private:
     void renderMarkdown(const QString &text);
@@ -89,6 +103,12 @@ private:
     QPushButton *m_copyBtn;
     QLabel *m_streamLabel;
     QLabel *m_tokenLabel;
+    QPushButton *m_copyBtn;
+    QPushButton *m_regenerateBtn;
+    QPushButton *m_branchBtn;
+    QPushButton *m_editBtn;
+    QTextEdit *m_editField;
+    int m_messageIndex;
     bool m_isStreaming;
 };
 
@@ -101,12 +121,19 @@ public:
 
 private slots:
     void onSendMessage();
-    void onResponseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens);
+    void onResponseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs);
     void onResponseChunk(const QString &chunk);
-    void onResponseFinished();
+    void onResponseFinished(int responseTimeMs);
     void onErrorOccurred(const QString &error);
     void onSettings();
     void onExportChat();
+    void onAdvancedSettings();
+    void onToggleTheme();
+    void onRegenerateResponse();
+    void onBranchConversation(int messageIndex);
+    void onEditMessage(int messageIndex, const QString &newContent);
+    void onEditMessage(int messageIndex, const QString &newContent);
+    void onAttachImage();
     void onModelsFetched(const QStringList &models);
     void onModelChanged(const QString &model);
     void onNewChat();
@@ -130,16 +157,19 @@ private:
     void loadChatSessions();
     QString generateChatTitle(const QString &firstMessage);
     void clearChatDisplay();
-    void addMessageCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0);
+    void addMessageCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0, int responseTimeMs = 0);
     void scrollToBottom();
     void applyModelFilter();
     void deleteChatAtRow(int row);
+    void renameChat(int row);
+    void togglePinChat(int row);
     void showWelcomeScreen();
     void hideWelcomeScreen();
     void filterChats(const QString &query);
     void saveDraft();
     void loadDraft();
     void clearDraft();
+    void applyTheme();
 
     QWidget *m_sidebar;
     QLabel *m_appTitle;
@@ -153,9 +183,11 @@ private:
     QVBoxLayout *m_chatLayout;
     QTextEdit *m_inputField;
     QToolButton *m_sendButton;
+    QToolButton *m_attachButton;
     QComboBox *m_modelCombo;
     QCheckBox *m_uncensoredFilter;
     QCheckBox *m_streamToggle;
+    QCheckBox *m_webSearchToggle;
     QSplitter *m_splitter;
     ApiClient *m_apiClient;
     QList<ChatSession> m_chatSessions;
@@ -163,10 +195,14 @@ private:
     QSettings m_settings;
     ChatMessageCard *m_streamingCard;
     QStringList m_allModels;
+    QString m_currentChatImage;
+    QLabel *m_imagePreview;
     QStatusBar *m_statusBar;
     QLabel *m_statusModel;
     QLabel *m_statusTokens;
     QLabel *m_statusConnection;
+    QLabel *m_statusResponseTime;
+    bool m_isDarkTheme;
 };
 
 #endif // MAINWINDOW_H
