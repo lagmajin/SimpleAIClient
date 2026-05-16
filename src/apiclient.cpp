@@ -12,6 +12,7 @@ ApiClient::ApiClient(QObject *parent)
     , m_streaming(false)
     , m_temperature(0.7)
     , m_maxTokens(0)
+    , m_webSearch(false)
 {
 }
 
@@ -53,7 +54,7 @@ void ApiClient::setWebSearch(bool enabled)
 void ApiClient::sendMessage(const QList<ChatMessage> &messages)
 {
     QThread *thread = new QThread();
-    ChatRequestWorker *worker = new ChatRequestWorker(m_apiKey, m_model, messages, m_streaming, m_systemPrompt, m_temperature, m_maxTokens);
+    ChatRequestWorker *worker = new ChatRequestWorker(m_apiKey, m_model, messages, m_streaming, m_systemPrompt, m_temperature, m_maxTokens, m_webSearch);
     worker->moveToThread(thread);
 
     connect(thread, &QThread::started, worker, &ChatRequestWorker::execute);
@@ -87,8 +88,8 @@ void ApiClient::fetchModels()
     thread->start();
 }
 
-ChatRequestWorker::ChatRequestWorker(const QString &apiKey, const QString &model, const QList<ChatMessage> &messages, bool streaming, const QString &systemPrompt, double temperature, int maxTokens)
-    : m_apiKey(apiKey), m_model(model), m_messages(messages), m_streaming(streaming), m_startTime(0), m_systemPrompt(systemPrompt), m_temperature(temperature), m_maxTokens(maxTokens)
+ChatRequestWorker::ChatRequestWorker(const QString &apiKey, const QString &model, const QList<ChatMessage> &messages, bool streaming, const QString &systemPrompt, double temperature, int maxTokens, bool webSearch)
+    : m_apiKey(apiKey), m_model(model), m_messages(messages), m_streaming(streaming), m_startTime(0), m_systemPrompt(systemPrompt), m_temperature(temperature), m_maxTokens(maxTokens), m_webSearch(webSearch)
 {
 }
 

@@ -53,15 +53,15 @@ class ChatRequestWorker : public QObject
 {
     Q_OBJECT
 public:
-    ChatRequestWorker(const QString &apiKey, const QString &model, const QList<ChatMessage> &messages, bool streaming, const QString &systemPrompt, double temperature, int maxTokens);
+    ChatRequestWorker(const QString &apiKey, const QString &model, const QList<ChatMessage> &messages, bool streaming, const QString &systemPrompt, double temperature, int maxTokens, bool webSearch);
 
 public slots:
     void execute();
 
 signals:
-    void responseReceived(const QString &response);
+    void responseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs);
     void responseChunk(const QString &chunk);
-    void responseFinished();
+    void responseFinished(int responseTimeMs);
     void errorOccurred(const QString &error);
 
 private:
@@ -75,6 +75,7 @@ private:
     QString m_systemPrompt;
     double m_temperature;
     int m_maxTokens;
+    bool m_webSearch;
 };
 
 class ModelsRequestWorker : public QObject

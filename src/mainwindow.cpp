@@ -36,7 +36,18 @@
 #include <QDoubleSpinBox>
 #include <QSlider>
 #include <QPixmap>
+#include <QEnterEvent>
 #include <QRegularExpression>
+#include <QListWidget>
+#include <QDialogButtonBox>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QUrl>
+#include <QSoundEffect>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QAbstractItemView>
 
 AvatarLabel::AvatarLabel(const QString &role, QWidget *parent)
     : QLabel(parent)
@@ -86,8 +97,8 @@ AvatarLabel::AvatarLabel(const QString &role, QWidget *parent)
     setPixmap(pixmap);
 }
 
-ChatListItem::ChatListItem(const QString &title, int index, QWidget *parent)
-    : QWidget(parent), m_index(index)
+ChatListItem::ChatListItem(const QString &title, int index, bool isPinned, QWidget *parent)
+    : QWidget(parent), m_index(index), m_isPinned(isPinned)
 {
     setStyleSheet(
         "QWidget { "
@@ -140,19 +151,18 @@ ChatListItem::ChatListItem(const QString &title, int index, QWidget *parent)
     setContextMenuPolicy(Qt::CustomContextMenu);
     connect(this, &QWidget::customContextMenuRequested, [this](const QPoint &pos) {
         QMenu menu(this);
-    QAction *renameAction = menu.addAction("Rename");
-    QAction *pinAction = menu.addAction(m_chatSessions[row].pinned ? "Unpin" : "Pin");
-    QAction *chosen = menu.exec(mapToGlobal(pos));
-    if (chosen == renameAction) {
-        emit renameRequested(m_index);
-    } else if (chosen == pinAction) {
-        emit pinRequested(m_index);
-    }
-}
+        QAction *renameAction = menu.addAction("Rename");
+        QAction *pinAction = menu.addAction(m_isPinned ? "Unpin" : "Pin");
+        QAction *chosen = menu.exec(mapToGlobal(pos));
+        if (chosen == renameAction) {
+            emit renameRequested(m_index);
+        } else if (chosen == pinAction) {
+            emit pinRequested(m_index);
+        }
     });
 }
 
-void ChatListItem::enterEvent(QEvent *event)
+void ChatListItem::enterEvent(QEnterEvent *event)
 {
     QWidget::enterEvent(event);
     m_deleteBtn->setVisible(true);
@@ -175,7 +185,7 @@ void ChatListItem::mousePressEvent(QMouseEvent *event)
 }
 
 ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QWidget *parent)
-    : QWidget(parent), m_role(role), m_fullContent(content), m_copyBtn(nullptr), m_streamLabel(nullptr), m_tokenLabel(nullptr), m_regenerateBtn(nullptr), m_branchBtn(nullptr), m_editBtn(nullptr), m_editField(nullptr), m_messageIndex(-1), m_isStreaming(false)
+    : QWidget(parent), m_role(role), m_fullContent(content), m_copyBtn(nullptr), m_streamLabel(nullptr), m_tokenLabel(nullptr), m_regenerateBtn(nullptr), m_branchBtn(nullptr), m_editBtn(nullptr), m_editField(nullptr), m_messageIndex(-1), m_isStreaming(false), m_timestampLabel(nullptr)
 {
     m_outerLayout = new QVBoxLayout(this);
     m_outerLayout->setContentsMargins(0, 8, 0, 8);
@@ -186,13 +196,6 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
     rowLayout->setSpacing(12);
 
     m_avatar = new AvatarLabel(role, this);
-
-    if (role == "user") {
-        rowLayout->addStretch();
-        rowLayout->addWidget(m_avatar, 0, Qt::AlignTop | Qt::AlignRight);
-    } else {
-        rowLayout->addWidget(m_avatar, 0, Qt::AlignTop | Qt::AlignLeft);
-    }
 
     m_card = new QFrame(this);
     QString bgColor = (role == "user" ? "#005c4b" : (role == "error" ? "#4a1515" : "#2f2f2f"));
@@ -220,6 +223,16 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
         renderMarkdown(content);
     }
 
+    if (role == "user") {
+        rowLayout->addStretch();
+        rowLayout->addWidget(m_card, 0, Qt::AlignRight);
+        rowLayout->addWidget(m_avatar, 0, Qt::AlignTop | Qt::AlignRight);
+    } else {
+        rowLayout->addWidget(m_avatar, 0, Qt::AlignTop | Qt::AlignLeft);
+        rowLayout->addWidget(m_card, 0, Qt::AlignLeft);
+        rowLayout->addStretch();
+    }
+
     m_copyContainer = new QWidget(m_card);
     m_copyContainer->setVisible(false);
     QHBoxLayout *copyLayout = new QHBoxLayout(m_copyContainer);
@@ -235,9 +248,24 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
         "  border-radius: 4px; "
         "  padding: 4px 10px; "
         "  font-size: 12px; "
+        "} "
+        "QPushButton:disabled { background-color: #2f2f2f; color: #4ade80; }"
     );
-    m_copyBtn->setMaximumWidth(50);
+    m_copyBtn->setMaximumWidth(60);
     copyLayout->addWidget(m_copyBtn);
+
+    connect(m_copyBtn, &QPushButton::clicked, [this]() {
+        QClipboard *clipboard = QApplication::clipboard();
+        clipboard->setText(m_fullContent);
+
+        m_copyBtn->setText("Copied!");
+        m_copyBtn->setEnabled(false);
+
+        QTimer::singleShot(1000, [this]() {
+            m_copyBtn->setText("Copy");
+            m_copyBtn->setEnabled(true);
+        });
+    });
 
     m_regenerateBtn = new QPushButton("Regenerate", m_card);
     m_regenerateBtn->setStyleSheet(
@@ -296,13 +324,38 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
 
     m_layout->addWidget(m_copyContainer);
 
-    rowLayout->addWidget(m_card, 0, role == "user" ? Qt::AlignRight : Qt::AlignLeft);
-
-    if (role != "user") {
-        rowLayout->addStretch();
-    }
-
     m_outerLayout->addLayout(rowLayout);
+
+    m_timestampLabel = new QLabel(this);
+    m_timestampLabel->setStyleSheet("QLabel { color: #8e8e8e; font-size: 11px; padding: 2px 8px; }");
+    m_timestampLabel->setVisible(false);
+    m_timestampLabel->setAlignment(role == "user" ? Qt::AlignRight : Qt::AlignLeft);
+    m_outerLayout->addWidget(m_timestampLabel);
+
+    setMouseTracking(true);
+    m_card->setMouseTracking(true);
+}
+
+void ChatMessageCard::setTimestamp(const QDateTime &timestamp)
+{
+    m_timestamp = timestamp;
+}
+
+void ChatMessageCard::enterEvent(QEnterEvent *event)
+{
+    QWidget::enterEvent(event);
+    if (m_timestamp.isValid() && m_timestampLabel) {
+        m_timestampLabel->setText(m_timestamp.toString("HH:mm"));
+        m_timestampLabel->setVisible(true);
+    }
+}
+
+void ChatMessageCard::leaveEvent(QEvent *event)
+{
+    QWidget::leaveEvent(event);
+    if (m_timestampLabel) {
+        m_timestampLabel->setVisible(false);
+    }
 }
 
 void ChatMessageCard::appendContent(const QString &content)
@@ -496,12 +549,12 @@ QString ChatMessageCard::renderInlineMarkdown(const QString &text)
 {
     QString result = text;
 
-    result = QRegularExpression("\\*\\*(.+?)\\*\\*").replace(result, "<b>\\1</b>");
-    result = QRegularExpression("\\*(.+?)\\*").replace(result, "<i>\\1</i>");
-    result = QRegularExpression("__(.+?)__").replace(result, "<b>\\1</b>");
-    result = QRegularExpression("_(.+?)_").replace(result, "<i>\\1</i>");
-    result = QRegularExpression("`(.+?)`").replace(result, "<code style='background-color:#1a1a1a; padding:2px 4px; border-radius:3px; font-family:monospace;'>\\1</code>");
-    result = QRegularExpression("\\[([^\\]]+)\\]\\(([^)]+)\\)").replace(result, "<a href='\\2' style='color:#60a5fa;'>\\1</a>");
+    result.replace(QRegularExpression("\\*\\*(.+?)\\*\\*"), "<b>\\1</b>");
+    result.replace(QRegularExpression("\\*(.+?)\\*"), "<i>\\1</i>");
+    result.replace(QRegularExpression("__(.+?)__"), "<b>\\1</b>");
+    result.replace(QRegularExpression("_(.+?)_"), "<i>\\1</i>");
+    result.replace(QRegularExpression("`(.+?)`"), "<code style='background-color:#1a1a1a; padding:2px 4px; border-radius:3px; font-family:monospace;'>\\1</code>");
+    result.replace(QRegularExpression("\\[([^\\]]+)\\]\\(([^)]+)\\)"), "<a href='\\2' style='color:#60a5fa;'>\\1</a>");
 
     return result;
 }
@@ -660,6 +713,108 @@ void ChatMessageCard::renderMarkdown(const QString &text)
     }
 }
 
+void ChatMessageCard::highlightText(const QString &text)
+{
+    if (text.isEmpty()) {
+        clearHighlight();
+        return;
+    }
+
+    QString escaped = escapeHtml(m_fullContent);
+    QRegularExpression regex("(" + QRegularExpression::escape(text) + ")", QRegularExpression::CaseInsensitiveOption);
+    QString highlighted = escaped.replace(regex, "<mark style='background-color:#fbbf24;color:#000;'>\\1</mark>");
+
+    if (m_streamLabel) {
+        m_streamLabel->setText(highlighted);
+    } else {
+        rebuildContent();
+        QLabel *firstLabel = m_card->findChild<QLabel*>();
+        if (firstLabel) {
+            QString orig = firstLabel->text();
+            QString hl = orig.replace(regex, "<mark style='background-color:#fbbf24;color:#000;'>\\1</mark>");
+            firstLabel->setText(hl);
+        }
+    }
+}
+
+void ChatMessageCard::clearHighlight()
+{
+    if (m_streamLabel) {
+        m_streamLabel->setText(escapeHtml(m_fullContent));
+    } else {
+        rebuildContent();
+    }
+}
+
+ChatSearchBar::ChatSearchBar(QWidget *parent)
+    : QFrame(parent)
+{
+    setFrameStyle(QFrame::StyledPanel);
+    setStyleSheet(
+        "QFrame { "
+        "  background-color: #2f2f2f; "
+        "  border: 1px solid #4d4d4f; "
+        "  border-radius: 6px; "
+        "  padding: 4px; "
+        "} "
+        "QLineEdit { "
+        "  background-color: #1a1a1a; "
+        "  color: #ececf1; "
+        "  border: 1px solid #4d4d4f; "
+        "  border-radius: 4px; "
+        "  padding: 4px 8px; "
+        "  font-size: 13px; "
+        "} "
+        "QPushButton { "
+        "  background-color: #404040; "
+        "  color: #ececf1; "
+        "  border: none; "
+        "  border-radius: 4px; "
+        "  padding: 4px 8px; "
+        "  font-size: 12px; "
+        "} "
+        "QPushButton:hover { background-color: #505050; }"
+    );
+
+    QHBoxLayout *layout = new QHBoxLayout(this);
+    layout->setContentsMargins(6, 4, 6, 4);
+    layout->setSpacing(4);
+
+    m_searchInput = new QLineEdit(this);
+    m_searchInput->setPlaceholderText("Search in chat...");
+    m_searchInput->setMaximumWidth(250);
+    connect(m_searchInput, &QLineEdit::textChanged, this, &ChatSearchBar::searchTextChanged);
+
+    m_matchCount = new QLabel("0/0", this);
+    m_matchCount->setStyleSheet("QLabel { color: #8e8e8e; font-size: 12px; padding: 0 4px; }");
+    m_matchCount->setMaximumWidth(50);
+
+    m_prevBtn = new QPushButton("▲", this);
+    m_prevBtn->setMaximumWidth(24);
+    connect(m_prevBtn, &QPushButton::clicked, this, &ChatSearchBar::findPrevious);
+
+    m_nextBtn = new QPushButton("▼", this);
+    m_nextBtn->setMaximumWidth(24);
+    connect(m_nextBtn, &QPushButton::clicked, this, &ChatSearchBar::findNext);
+
+    m_closeBtn = new QPushButton("✕", this);
+    m_closeBtn->setMaximumWidth(24);
+    connect(m_closeBtn, &QPushButton::clicked, this, &ChatSearchBar::onClose);
+
+    layout->addWidget(m_searchInput);
+    layout->addWidget(m_matchCount);
+    layout->addWidget(m_prevBtn);
+    layout->addWidget(m_nextBtn);
+    layout->addWidget(m_closeBtn);
+}
+
+void ChatSearchBar::onClose()
+{
+    m_searchInput->clear();
+    emit closed();
+    hide();
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_inputField(new QTextEdit)
@@ -672,22 +827,41 @@ MainWindow::MainWindow(QWidget *parent)
     , m_streamingCard(nullptr)
     , m_currentChatImage("")
     , m_imagePreview(nullptr)
+    , m_thinkingIndicator(nullptr)
+    , m_thinkingTimer(new QTimer(this))
+    , m_thinkingDots(0)
+    , m_charCounter(nullptr)
+    , m_searchBar(nullptr)
+    , m_currentHighlightIndex(-1)
+    , m_currentProfileName("")
+    , m_autoScroll(true)
+    , m_chatFontSize(15)
+    , m_retryCount(0)
+    , m_maxRetries(3)
+    , m_retryTimer(new QTimer(this))
+    , m_notificationSound(nullptr)
+    , m_soundInitialized(false)
+    , m_chatStartTime()
+    , m_statusDuration(nullptr)
+    , m_statusSpeed(nullptr)
+    , m_streamStartTime(0)
+    , m_streamTokenCount(0)
 {
     setWindowTitle("SimpleAIClient");
     resize(1200, 800);
+    setAcceptDrops(true);
 
     setupUI();
     setupMenu();
+    loadProfiles();
     loadSettings();
     loadChatSessions();
 
     if (m_chatSessions.isEmpty()) {
         createNewChat();
     } else {
-        if (!m_chatSessions.isEmpty() && m_chatSessions[0].messages.isEmpty()) {
-            showWelcomeScreen();
-        }
-        loadDraft();
+        switchToChat(0);
+        updateChatList();
     }
 
     m_inputField->installEventFilter(this);
@@ -701,10 +875,18 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_apiClient, &ApiClient::responseReceived, this, &MainWindow::onResponseReceived);
     connect(m_apiClient, &ApiClient::responseChunk, this, &MainWindow::onResponseChunk);
     connect(m_apiClient, &ApiClient::responseFinished, this, &MainWindow::onResponseFinished);
-    connect(m_apiClient, &ApiClient::errorOccurred, this, &MainWindow::onErrorOccurred);
+    connect(m_apiClient, &ApiClient::errorOccurred, this, &MainWindow::onApiErrorWithRetry);
     connect(m_apiClient, &ApiClient::modelsFetched, this, &MainWindow::onModelsFetched);
     connect(m_modelCombo, QOverload<const QString &>::of(&QComboBox::currentTextChanged), this, &MainWindow::onModelChanged);
     connect(m_newChatButton, &QPushButton::clicked, this, &MainWindow::onNewChat);
+    connect(m_profileCombo, QOverload<const QString &>::of(&QComboBox::currentTextChanged), this, &MainWindow::onProfileChanged);
+    connect(m_inputField, &QTextEdit::textChanged, this, &MainWindow::updateCharCounter);
+
+    new QShortcut(QKeySequence("Ctrl+F"), this, [this]() { showSearchBar(); });
+    new QShortcut(QKeySequence("Ctrl+="), this, [this]() { adjustFontSize(1); });
+    new QShortcut(QKeySequence("Ctrl+-"), this, [this]() { adjustFontSize(-1); });
+    new QShortcut(QKeySequence("Ctrl+0"), this, [this]() { resetFontSize(); });
+    new QShortcut(QKeySequence("Ctrl+?"), this, [this]() { showShortcutsDialog(); });
 
     updateChatList();
     fetchModels();
@@ -797,27 +979,269 @@ void MainWindow::setupUI()
         "QToolButton:disabled { background-color: #404040; }"
     );
 
-    inputInner->addWidget(m_attachButton, 0, Qt::AlignBottom);
-    inputInner->addWidget(m_inputField, 1);
-    inputInner->addWidget(m_sendButton, 0, Qt::AlignBottom);
+    m_sidebar = new QWidget(this);
+    m_sidebar->setMinimumWidth(240);
+    m_sidebar->setMaximumWidth(320);
+    m_sidebar->setStyleSheet("background-color: #171717; color: #ececf1;");
 
-    m_imagePreview = new QLabel(inputFrame);
+    QVBoxLayout *sidebarLayout = new QVBoxLayout(m_sidebar);
+    sidebarLayout->setContentsMargins(12, 16, 12, 10);
+    sidebarLayout->setSpacing(8);
+
+    m_appTitle = new QLabel("SimpleAIClient", m_sidebar);
+    m_appTitle->setStyleSheet(
+        "QLabel { "
+        "  color: #ececf1; "
+        "  font-size: 18px; "
+        "  font-weight: bold; "
+        "  padding: 8px 4px; "
+        "}"
+    );
+    sidebarLayout->addWidget(m_appTitle);
+
+    QFrame *sidebarDivider = new QFrame(m_sidebar);
+    sidebarDivider->setFrameShape(QFrame::HLine);
+    sidebarDivider->setStyleSheet("QFrame { color: #3a3a3a; background-color: #3a3a3a; }");
+    sidebarDivider->setMaximumHeight(1);
+    sidebarLayout->addWidget(sidebarDivider);
+
+    m_searchField = new QLineEdit(m_sidebar);
+    m_searchField->setPlaceholderText("Search chats...");
+    m_searchField->setStyleSheet(
+        "QLineEdit { "
+        "  background-color: #2f2f2f; "
+        "  color: #ececf1; "
+        "  border: 1px solid #4d4d4f; "
+        "  border-radius: 6px; "
+        "  padding: 6px 10px; "
+        "  font-size: 13px; "
+        "} "
+        "QLineEdit:focus { border: 1px solid #005c4b; }"
+    );
+    connect(m_searchField, &QLineEdit::textChanged, this, &MainWindow::filterChats);
+    sidebarLayout->addWidget(m_searchField);
+
+    m_newChatButton->setStyleSheet(
+        "QPushButton { "
+        "  background-color: transparent; "
+        "  color: #ececf1; "
+        "  border: 1px solid #4d4d4f; "
+        "  border-radius: 8px; "
+        "  padding: 10px; "
+        "  text-align: left; "
+        "  font-size: 14px; "
+        "} "
+        "QPushButton:hover { background-color: #2a2b32; }"
+    );
+    sidebarLayout->addWidget(m_newChatButton);
+
+    m_chatListContainer = new QWidget();
+    m_chatListContainer->setStyleSheet("background-color: transparent;");
+    QVBoxLayout *chatListLayout = new QVBoxLayout(m_chatListContainer);
+    chatListLayout->setContentsMargins(0, 0, 0, 0);
+    chatListLayout->setSpacing(2);
+    chatListLayout->addStretch();
+
+    m_chatListScroll = new QScrollArea(m_sidebar);
+    m_chatListScroll->setWidget(m_chatListContainer);
+    m_chatListScroll->setWidgetResizable(true);
+    m_chatListScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_chatListScroll->setStyleSheet("QScrollArea { border: none; background-color: transparent; }" + scrollbarStyle);
+    sidebarLayout->addWidget(m_chatListScroll, 1);
+
+    m_splitter = new QSplitter(Qt::Horizontal, this);
+    m_splitter->addWidget(m_sidebar);
+
+    QWidget *mainPanel = new QWidget(this);
+    QVBoxLayout *mainLayout = new QVBoxLayout(mainPanel);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setSpacing(0);
+
+    QHBoxLayout *topBar = new QHBoxLayout();
+    topBar->addWidget(m_modelCombo);
+
+    m_profileCombo = new QComboBox(this);
+    m_profileCombo->setMinimumWidth(120);
+    m_profileCombo->setMaximumWidth(180);
+    m_profileCombo->setStyleSheet(
+        "QComboBox { "
+        "  background-color: #2f2f2f; "
+        "  color: #ececf1; "
+        "  border: 1px solid #4d4d4f; "
+        "  border-radius: 8px; "
+        "  padding: 8px 12px; "
+        "  font-size: 13px; "
+        "} "
+        "QComboBox::drop-down { "
+        "  border: none; "
+        "  padding-right: 10px; "
+        "} "
+        "QComboBox QAbstractItemView { "
+        "  background-color: #2f2f2f; "
+        "  color: #ececf1; "
+        "  selection-background-color: #404040; "
+        "  font-size: 13px; "
+        "}"
+    );
+    topBar->addWidget(m_profileCombo);
+
+    m_uncensoredFilter = new QCheckBox("Uncensored only", this);
+    m_uncensoredFilter->setStyleSheet(
+        "QCheckBox { "
+        "  color: #ececf1; "
+        "  font-size: 14px; "
+        "  spacing: 6px; "
+        "} "
+        "QCheckBox::indicator { "
+        "  width: 16px; "
+        "  height: 16px; "
+        "  border-radius: 4px; "
+        "  border: 1px solid #4d4d4f; "
+        "  background-color: #2f2f2f; "
+        "} "
+        "QCheckBox::indicator:checked { "
+        "  background-color: #005c4b; "
+        "  border: 1px solid #005c4b; "
+        "}"
+    );
+    m_uncensoredFilter->setChecked(m_settings.value("uncensoredFilter", false).toBool());
+    connect(m_uncensoredFilter, &QCheckBox::toggled, this, [this]() {
+        m_settings.setValue("uncensoredFilter", m_uncensoredFilter->isChecked());
+        applyModelFilter();
+    });
+    topBar->addWidget(m_uncensoredFilter);
+
+    m_streamToggle = new QCheckBox("Stream", this);
+    m_streamToggle->setStyleSheet(m_uncensoredFilter->styleSheet());
+    m_streamToggle->setChecked(m_settings.value("streamMode", true).toBool());
+    m_apiClient->setStreaming(m_streamToggle->isChecked());
+    connect(m_streamToggle, &QCheckBox::toggled, this, [this](bool checked) {
+        m_settings.setValue("streamMode", checked);
+        m_apiClient->setStreaming(checked);
+    });
+    topBar->addWidget(m_streamToggle);
+
+    m_webSearchToggle = new QCheckBox("Web Search", this);
+    m_webSearchToggle->setStyleSheet(m_uncensoredFilter->styleSheet());
+    m_webSearchToggle->setChecked(m_settings.value("webSearch", false).toBool());
+    m_apiClient->setWebSearch(m_webSearchToggle->isChecked());
+    connect(m_webSearchToggle, &QCheckBox::toggled, this, [this](bool checked) {
+        m_settings.setValue("webSearch", checked);
+        m_apiClient->setWebSearch(checked);
+    });
+    topBar->addWidget(m_webSearchToggle);
+
+    m_autoScrollToggle = new QCheckBox("Auto Scroll", this);
+    m_autoScrollToggle->setStyleSheet(m_uncensoredFilter->styleSheet());
+    m_autoScrollToggle->setChecked(m_settings.value("autoScroll", true).toBool());
+    m_autoScroll = m_autoScrollToggle->isChecked();
+    connect(m_autoScrollToggle, &QCheckBox::toggled, this, &MainWindow::onToggleAutoScroll);
+    topBar->addWidget(m_autoScrollToggle);
+
+    topBar->addStretch();
+    topBar->setContentsMargins(16, 12, 16, 8);
+    mainLayout->addLayout(topBar);
+
+    QFrame *topBarDivider = new QFrame(mainPanel);
+    topBarDivider->setFrameShape(QFrame::HLine);
+    topBarDivider->setStyleSheet("QFrame { color: #3a3a3a; background-color: #3a3a3a; }");
+    topBarDivider->setMaximumHeight(1);
+    mainLayout->addWidget(topBarDivider);
+
+    m_searchBar = new ChatSearchBar(mainPanel);
+    m_searchBar->setVisible(false);
+    connect(m_searchBar, &ChatSearchBar::searchTextChanged, this, &MainWindow::onSearchTextChanged);
+    connect(m_searchBar, &ChatSearchBar::findNext, this, &MainWindow::onFindNext);
+    connect(m_searchBar, &ChatSearchBar::findPrevious, this, &MainWindow::onFindPrevious);
+    connect(m_searchBar, &ChatSearchBar::closed, this, &MainWindow::clearHighlights);
+    mainLayout->addWidget(m_searchBar);
+
+    m_scrollArea = new QScrollArea(mainPanel);
+    m_scrollArea->setWidgetResizable(true);
+    m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scrollArea->setStyleSheet("QScrollArea { border: none; background-color: #212121; }" + scrollbarStyle);
+
+    m_chatContainer = new QWidget();
+    m_chatContainer->setStyleSheet("background-color: #212121;");
+    m_chatLayout = new QVBoxLayout(m_chatContainer);
+    m_chatLayout->setContentsMargins(32, 20, 32, 20);
+    m_chatLayout->setSpacing(4);
+
+    m_welcomeWidget = new QWidget(m_chatContainer);
+    QVBoxLayout *welcomeLayout = new QVBoxLayout(m_welcomeWidget);
+    welcomeLayout->setAlignment(Qt::AlignCenter);
+    welcomeLayout->setSpacing(16);
+
+    QLabel *welcomeTitle = new QLabel("SimpleAIClient", m_welcomeWidget);
+    welcomeTitle->setStyleSheet(
+        "QLabel { "
+        "  color: #ececf1; "
+        "  font-size: 28px; "
+        "  font-weight: bold; "
+        "}"
+    );
+    welcomeTitle->setAlignment(Qt::AlignCenter);
+    welcomeLayout->addWidget(welcomeTitle);
+
+    QLabel *welcomeSubtitle = new QLabel("How can I help you today?", m_welcomeWidget);
+    welcomeSubtitle->setStyleSheet(
+        "QLabel { "
+        "  color: #8e8e8e; "
+        "  font-size: 16px; "
+        "}"
+    );
+    welcomeSubtitle->setAlignment(Qt::AlignCenter);
+    welcomeLayout->addWidget(welcomeSubtitle);
+
+    m_chatLayout->addWidget(m_welcomeWidget, 0, Qt::AlignCenter);
+    m_chatLayout->addStretch();
+
+    m_scrollArea->setWidget(m_chatContainer);
+    mainLayout->addWidget(m_scrollArea, 1);
+
+    QFrame *inputFrame = new QFrame(mainPanel);
+    inputFrame->setStyleSheet("QFrame { background-color: #212121; }");
+    QVBoxLayout *inputWithCounter = new QVBoxLayout(inputFrame);
+    inputWithCounter->setContentsMargins(0, 0, 0, 0);
+    inputWithCounter->setSpacing(0);
+
+    QHBoxLayout *inputLayout = new QHBoxLayout();
+    inputLayout->setContentsMargins(40, 12, 40, 16);
+
+    QWidget *inputWrapper = new QWidget(inputFrame);
+    inputWrapper->setMaximumWidth(800);
+    inputWrapper->setStyleSheet("background-color: #2f2f2f; border: 1px solid #4d4d4f; border-radius: 24px;");
+    QVBoxLayout *inputWrapperLayout = new QVBoxLayout(inputWrapper);
+    inputWrapperLayout->setContentsMargins(0, 0, 0, 0);
+    inputWrapperLayout->setSpacing(4);
+
+    m_imagePreview = new QLabel(inputWrapper);
     m_imagePreview->setMaximumHeight(60);
     m_imagePreview->setMaximumWidth(200);
     m_imagePreview->setScaledContents(true);
     m_imagePreview->setStyleSheet("QLabel { border: 1px solid #4d4d4f; border-radius: 8px; padding: 4px; }");
     m_imagePreview->setVisible(false);
     m_imagePreview->setAlignment(Qt::AlignCenter);
-
-    QVBoxLayout *inputWrapperLayout = new QVBoxLayout(inputWrapper);
-    inputWrapperLayout->setContentsMargins(0, 0, 0, 0);
-    inputWrapperLayout->setSpacing(4);
     inputWrapperLayout->addWidget(m_imagePreview, 0, Qt::AlignLeft);
+
+    QHBoxLayout *inputInner = new QHBoxLayout();
+    inputInner->setContentsMargins(12, 6, 6, 6);
+    inputInner->setSpacing(4);
+    inputInner->addWidget(m_attachButton, 0, Qt::AlignBottom);
+    inputInner->addWidget(m_inputField, 1);
+    inputInner->addWidget(m_sendButton, 0, Qt::AlignBottom);
     inputWrapperLayout->addLayout(inputInner);
 
     inputLayout->addStretch();
     inputLayout->addWidget(inputWrapper);
     inputLayout->addStretch();
+
+    m_charCounter = new QLabel("0", inputFrame);
+    m_charCounter->setStyleSheet("QLabel { color: #8e8e8e; font-size: 11px; padding: 0 8px; }");
+    m_charCounter->setAlignment(Qt::AlignRight);
+
+    inputWithCounter->addLayout(inputLayout);
+    inputWithCounter->addWidget(m_charCounter, 0, Qt::AlignRight);
 
     mainLayout->addWidget(inputFrame);
 
@@ -841,8 +1265,13 @@ void MainWindow::setupUI()
     m_statusModel = new QLabel(m_statusBar);
     m_statusTokens = new QLabel(m_statusBar);
     m_statusResponseTime = new QLabel(m_statusBar);
+    m_statusContextUsage = new QLabel(m_statusBar);
+    m_statusDuration = new QLabel(m_statusBar);
 
     m_statusBar->addWidget(m_statusConnection, 1);
+    m_statusBar->addPermanentWidget(m_statusSpeed);
+    m_statusBar->addPermanentWidget(m_statusDuration);
+    m_statusBar->addPermanentWidget(m_statusContextUsage);
     m_statusBar->addPermanentWidget(m_statusResponseTime);
     m_statusBar->addPermanentWidget(m_statusTokens);
     m_statusBar->addPermanentWidget(m_statusModel);
@@ -857,6 +1286,9 @@ void MainWindow::setupMenu()
     QMenu *fileMenu = menuBar->addMenu("File");
     QAction *settingsAction = fileMenu->addAction("Settings");
     connect(settingsAction, &QAction::triggered, this, &MainWindow::onSettings);
+
+    QAction *profilesAction = fileMenu->addAction("Manage Profiles...");
+    connect(profilesAction, &QAction::triggered, this, &MainWindow::onManageProfiles);
 
     QAction *clearAction = fileMenu->addAction("Clear Current Chat");
     connect(clearAction, &QAction::triggered, [this]() {
@@ -956,6 +1388,14 @@ void MainWindow::switchToChat(int index)
 {
     if (index < 0 || index >= m_chatSessions.size()) return;
 
+    QString currentDraft = m_inputField->toPlainText().trimmed();
+    if (!currentDraft.isEmpty()) {
+        QMessageBox::StandardButton result = QMessageBox::question(this, "Unsaved Draft",
+            "You have an unsaved draft. Discard it?",
+            QMessageBox::Discard | QMessageBox::Cancel);
+        if (result == QMessageBox::Cancel) return;
+    }
+
     saveDraft();
 
     m_currentChatIndex = index;
@@ -966,17 +1406,25 @@ void MainWindow::switchToChat(int index)
         showWelcomeScreen();
     } else {
         hideWelcomeScreen();
-    for (const auto &msg : chat.messages) {
-        QString displayText = msg.content;
-        if (!msg.imageUrl.isEmpty()) {
-            displayText += "\n[Image attached]";
+        for (const auto &msg : chat.messages) {
+            QString displayText = msg.content;
+            if (!msg.imageUrl.isEmpty()) {
+                displayText += "\n[Image attached]";
+            }
+            ChatMessageCard *card = addMessageCardWithCard(msg.role, displayText, msg.promptTokens, msg.completionTokens, msg.totalTokens);
+            if (card) card->setTimestamp(QDateTime::currentDateTime());
         }
-        addMessageCard(msg.role, displayText, msg.promptTokens, msg.completionTokens, msg.totalTokens);
     }
-    }
+
+    m_chatLayout->invalidate();
+    m_chatContainer->adjustSize();
+    m_scrollArea->widget()->updateGeometry();
+    m_scrollArea->viewport()->update();
 
     loadDraft();
     scrollToBottom();
+    updateContextUsage();
+    updateChatDuration();
 }
 
 void MainWindow::updateChatList()
@@ -1016,7 +1464,7 @@ void MainWindow::filterChats(const QString &query)
     QList<int> orderedIndices = pinnedIndices + unpinnedIndices;
 
     for (int idx : orderedIndices) {
-        ChatListItem *chatItem = new ChatListItem(m_chatSessions[idx].title, idx, m_chatListContainer);
+        ChatListItem *chatItem = new ChatListItem(m_chatSessions[idx].title, idx, m_chatSessions[idx].pinned, m_chatListContainer);
         if (idx == m_currentChatIndex) {
             chatItem->setStyleSheet("QWidget { background-color: #2a2b32; border-radius: 6px; }");
         }
@@ -1025,7 +1473,7 @@ void MainWindow::filterChats(const QString &query)
         connect(chatItem, &ChatListItem::clicked, this, [this, idx]() {
             switchToChat(idx);
             updateChatList();
-        });
+        }, Qt::QueuedConnection);
         connect(chatItem, &ChatListItem::deleteClicked, this, [this, idx]() {
             deleteChatAtRow(idx);
         });
@@ -1117,14 +1565,24 @@ void MainWindow::clearChatDisplay()
     }
     m_chatLayout->addStretch();
     m_streamingCard = nullptr;
+    m_chatLayout->invalidate();
+    m_chatContainer->adjustSize();
+    m_scrollArea->widget()->updateGeometry();
+    m_scrollArea->viewport()->update();
 }
 
 void MainWindow::addMessageCard(const QString &role, const QString &content, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs)
+{
+    addMessageCardWithCard(role, content, promptTokens, completionTokens, totalTokens, responseTimeMs);
+}
+
+ChatMessageCard* MainWindow::addMessageCardWithCard(const QString &role, const QString &content, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs)
 {
     hideWelcomeScreen();
 
     m_chatLayout->removeItem(m_chatLayout->itemAt(m_chatLayout->count() - 1));
     ChatMessageCard *card = new ChatMessageCard(role, content, m_chatContainer);
+    card->setTimestamp(QDateTime::currentDateTime());
     card->showCopyButton(true);
 
     int msgIndex = -1;
@@ -1159,10 +1617,12 @@ void MainWindow::addMessageCard(const QString &role, const QString &content, int
 
     m_chatLayout->addWidget(card);
     m_chatLayout->addStretch();
+    return card;
 }
 
 void MainWindow::scrollToBottom()
 {
+    if (!m_autoScroll) return;
     QScrollBar *bar = m_scrollArea->verticalScrollBar();
     QMetaObject::invokeMethod(bar, [bar]() {
         bar->setValue(bar->maximum());
@@ -1172,7 +1632,16 @@ void MainWindow::scrollToBottom()
 void MainWindow::showWelcomeScreen()
 {
     if (m_welcomeWidget) {
+        if (m_chatLayout->indexOf(m_welcomeWidget) == -1) {
+            m_chatLayout->insertWidget(0, m_welcomeWidget, 0, Qt::AlignCenter);
+        }
         m_welcomeWidget->setVisible(true);
+        m_welcomeWidget->show();
+        m_welcomeWidget->raise();
+        m_chatLayout->invalidate();
+        m_chatContainer->adjustSize();
+        m_scrollArea->widget()->updateGeometry();
+        m_scrollArea->viewport()->update();
     }
 }
 
@@ -1180,7 +1649,67 @@ void MainWindow::hideWelcomeScreen()
 {
     if (m_welcomeWidget) {
         m_welcomeWidget->setVisible(false);
+        m_chatLayout->invalidate();
+        m_chatContainer->adjustSize();
+        m_scrollArea->widget()->updateGeometry();
+        m_scrollArea->viewport()->update();
     }
+}
+
+void MainWindow::showThinkingIndicator()
+{
+    if (m_thinkingIndicator) return;
+
+    hideWelcomeScreen();
+
+    m_chatLayout->removeItem(m_chatLayout->itemAt(m_chatLayout->count() - 1));
+
+    m_thinkingIndicator = new QLabel(m_chatContainer);
+    m_thinkingIndicator->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_thinkingIndicator->setStyleSheet(
+        "QLabel { "
+        "  color: #8e8e8e; "
+        "  font-size: 15px; "
+        "  font-style: italic; "
+        "  padding: 12px 16px; "
+        "}"
+    );
+
+    QHBoxLayout *thinkingRow = new QHBoxLayout();
+    thinkingRow->setContentsMargins(32, 0, 32, 0);
+
+    AvatarLabel *aiAvatar = new AvatarLabel("assistant", m_chatContainer);
+    aiAvatar->setFixedSize(28, 28);
+    thinkingRow->addWidget(aiAvatar, 0, Qt::AlignTop);
+
+    thinkingRow->addWidget(m_thinkingIndicator, 1);
+    thinkingRow->addStretch();
+
+    m_chatLayout->insertLayout(m_chatLayout->count() - 1, thinkingRow);
+    m_chatLayout->addStretch();
+
+    m_thinkingDots = 0;
+    m_thinkingIndicator->setText("Thinking");
+    m_thinkingTimer->start(500);
+    connect(m_thinkingTimer, &QTimer::timeout, [this]() {
+        m_thinkingDots = (m_thinkingDots + 1) % 4;
+        QString dots;
+        for (int i = 0; i < m_thinkingDots; ++i) dots += ".";
+        m_thinkingIndicator->setText("Thinking" + dots);
+    });
+
+    scrollToBottom();
+}
+
+void MainWindow::hideThinkingIndicator()
+{
+    if (!m_thinkingIndicator) return;
+
+    m_thinkingTimer->stop();
+    disconnect(m_thinkingTimer, nullptr, this, nullptr);
+
+    delete m_thinkingIndicator;
+    m_thinkingIndicator = nullptr;
 }
 
 void MainWindow::applyModelFilter()
@@ -1230,6 +1759,13 @@ void MainWindow::onSendMessage()
 {
     QString text = m_inputField->toPlainText().trimmed();
     if (text.isEmpty() && m_currentChatImage.isEmpty()) return;
+
+    if (text.startsWith("/")) {
+        handleQuickCommand(text);
+        m_inputField->clear();
+        return;
+    }
+
     if (!checkApiKey()) return;
 
     clearDraft();
@@ -1261,18 +1797,15 @@ void MainWindow::onSendMessage()
     m_sendButton->setEnabled(false);
     m_inputField->setEnabled(false);
 
-    if (m_streamToggle->isChecked()) {
-        m_streamingCard = new ChatMessageCard("assistant", "", m_chatContainer);
-        m_streamingCard->setStreaming(true);
-        m_chatLayout->removeItem(m_chatLayout->itemAt(m_chatLayout->count() - 1));
-        m_chatLayout->addWidget(m_streamingCard);
-        m_chatLayout->addStretch();
-    } else {
-        m_chatLayout->removeItem(m_chatLayout->itemAt(m_chatLayout->count() - 1));
-        ChatMessageCard *thinkingCard = new ChatMessageCard("assistant", "_Thinking..._", m_chatContainer);
-        m_chatLayout->addWidget(thinkingCard);
-        m_chatLayout->addStretch();
-        m_streamingCard = thinkingCard;
+    m_retryCount = 0;
+    m_pendingMessages = m_chatSessions[m_currentChatIndex].messages;
+    showThinkingIndicator();
+
+    m_streamStartTime = QDateTime::currentMSecsSinceEpoch();
+    m_streamTokenCount = 0;
+
+    if (m_chatSessions[m_currentChatIndex].messages.size() == 1) {
+        m_chatStartTime = QDateTime::currentDateTime();
     }
 
     m_apiClient->sendMessage(m_chatSessions[m_currentChatIndex].messages);
@@ -1287,6 +1820,8 @@ void MainWindow::onSendMessage()
 
 void MainWindow::onResponseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs)
 {
+    hideThinkingIndicator();
+
     if (m_streamingCard) {
         m_chatLayout->removeWidget(m_streamingCard);
         delete m_streamingCard;
@@ -1315,13 +1850,32 @@ void MainWindow::onResponseReceived(const QString &response, int promptTokens, i
     scrollToBottom();
 
     saveChatSessions();
+
+    updateContextUsage();
 }
 
 void MainWindow::onResponseChunk(const QString &chunk)
 {
+    if (m_thinkingIndicator) {
+        hideThinkingIndicator();
+        m_chatLayout->removeItem(m_chatLayout->itemAt(m_chatLayout->count() - 1));
+        m_streamingCard = new ChatMessageCard("assistant", "", m_chatContainer);
+        m_streamingCard->setStreaming(true);
+        m_chatLayout->addWidget(m_streamingCard);
+        m_chatLayout->addStretch();
+    }
+
     if (m_streamingCard) {
-        m_streamingCard->appendContent(chunk);
-        scrollToBottom();
+        QString trimmed = chunk;
+        if (m_streamingCard->content().isEmpty()) {
+            trimmed = trimmed.trimmed();
+        }
+        if (!trimmed.isEmpty()) {
+            m_streamingCard->appendContent(trimmed);
+            m_streamTokenCount++;
+            updateStreamingSpeed(trimmed);
+            scrollToBottom();
+        }
     }
     if (m_statusConnection) {
         m_statusConnection->setText("Streaming...");
@@ -1330,6 +1884,8 @@ void MainWindow::onResponseChunk(const QString &chunk)
 
 void MainWindow::onResponseFinished(int responseTimeMs)
 {
+    hideThinkingIndicator();
+
     if (m_streamingCard) {
         m_streamingCard->setStreaming(false);
         m_streamingCard->showCopyButton(true);
@@ -1338,6 +1894,8 @@ void MainWindow::onResponseFinished(int responseTimeMs)
         ChatMessage assistantMsg{"assistant", fullContent, 0, 0, 0};
         m_chatSessions[m_currentChatIndex].messages.append(assistantMsg);
         saveChatSessions();
+
+        updateContextUsage();
     }
 
     if (m_statusConnection) {
@@ -1351,11 +1909,24 @@ void MainWindow::onResponseFinished(int responseTimeMs)
     m_inputField->setEnabled(true);
     m_inputField->setFocus();
     m_streamingCard = nullptr;
+    m_retryCount = 0;
+    m_pendingMessages.clear();
+
+    if (m_statusSpeed) m_statusSpeed->clear();
+    m_streamTokenCount = 0;
+
+    updateChatDuration();
+    playNotificationSound();
 }
 
 void MainWindow::onErrorOccurred(const QString &error)
 {
     qDebug() << "API Error:" << error;
+
+    hideThinkingIndicator();
+
+    m_retryCount = 0;
+    m_pendingMessages.clear();
 
     if (m_streamingCard) {
         m_chatLayout->removeWidget(m_streamingCard);
@@ -1408,7 +1979,6 @@ void MainWindow::onExportChat()
     }
 
     QTextStream out(&file);
-    out.setCodec("UTF-8");
 
     out << "# " << chat.title << "\n\n";
     out << "Exported: " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n\n";
@@ -1460,11 +2030,7 @@ void MainWindow::onRegenerateResponse()
     m_sendButton->setEnabled(false);
     m_inputField->setEnabled(false);
 
-    m_streamingCard = new ChatMessageCard("assistant", "", m_chatContainer);
-    m_streamingCard->setStreaming(true);
-    m_chatLayout->removeItem(m_chatLayout->itemAt(m_chatLayout->count() - 1));
-    m_chatLayout->addWidget(m_streamingCard);
-    m_chatLayout->addStretch();
+    showThinkingIndicator();
 
     m_apiClient->sendMessage(messages);
     saveChatSessions();
@@ -1532,11 +2098,7 @@ void MainWindow::onEditMessage(int messageIndex, const QString &newContent)
     m_sendButton->setEnabled(false);
     m_inputField->setEnabled(false);
 
-    m_streamingCard = new ChatMessageCard("assistant", "", m_chatContainer);
-    m_streamingCard->setStreaming(true);
-    m_chatLayout->removeItem(m_chatLayout->itemAt(m_chatLayout->count() - 1));
-    m_chatLayout->addWidget(m_streamingCard);
-    m_chatLayout->addStretch();
+    showThinkingIndicator();
 
     m_apiClient->sendMessage(messages);
     saveChatSessions();
@@ -1763,4 +2325,607 @@ void MainWindow::clearDraft()
     m_inputField->blockSignals(true);
     m_inputField->clear();
     m_inputField->blockSignals(false);
+}
+
+void MainWindow::updateCharCounter()
+{
+    if (!m_charCounter) return;
+    int len = m_inputField->toPlainText().length();
+    m_charCounter->setText(QString::number(len));
+}
+
+void MainWindow::handleQuickCommand(const QString &command)
+{
+    if (command == "/clear") {
+        if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
+            m_chatSessions[m_currentChatIndex].messages.clear();
+            clearChatDisplay();
+            saveChatSessions();
+            showWelcomeScreen();
+        }
+        return;
+    }
+
+    if (command == "/stats") {
+        if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return;
+        const auto &chat = m_chatSessions[m_currentChatIndex];
+        int totalTokens = 0;
+        int msgCount = chat.messages.size();
+        for (const auto &msg : chat.messages) {
+            totalTokens += msg.totalTokens;
+        }
+        QMessageBox::information(this, "Chat Statistics",
+            QString("Chat: %1\nMessages: %2\nTotal Tokens: %3").arg(chat.title).arg(msgCount).arg(totalTokens));
+        return;
+    }
+
+    if (command.startsWith("/model ")) {
+        QString modelName = command.mid(7).trimmed();
+        if (!modelName.isEmpty()) {
+            m_modelCombo->setCurrentText(modelName);
+            onModelChanged(modelName);
+        }
+        return;
+    }
+
+    if (command == "/help") {
+        QMessageBox::information(this, "Quick Commands",
+            "Available commands:\n"
+            "/clear - Clear current chat\n"
+            "/stats - Show chat statistics\n"
+            "/model <name> - Change model\n"
+            "/search - Open chat search");
+        return;
+    }
+
+    if (command == "/search") {
+        showSearchBar();
+        return;
+    }
+}
+
+void MainWindow::loadProfiles()
+{
+    m_profiles.clear();
+    m_profileCombo->clear();
+
+    QString data = m_settings.value("apiProfiles").toString();
+    if (!data.isEmpty()) {
+        QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8());
+        if (doc.isArray()) {
+            for (const auto &val : doc.array()) {
+                QJsonObject obj = val.toObject();
+                ApiProfile profile;
+                profile.name = obj["name"].toString();
+                profile.apiKey = obj["apiKey"].toString();
+                profile.model = obj["model"].toString();
+                profile.systemPrompt = obj["systemPrompt"].toString();
+                profile.temperature = obj["temperature"].toDouble();
+                profile.maxTokens = obj["maxTokens"].toInt();
+                m_profiles.append(profile);
+            }
+        }
+    }
+
+    if (m_profiles.isEmpty()) {
+        ApiProfile defaultProfile;
+        defaultProfile.name = "Default";
+        defaultProfile.apiKey = m_settings.value("apiKey").toString();
+        defaultProfile.model = m_settings.value("model", "venice-uncensored").toString();
+        defaultProfile.systemPrompt = m_settings.value("systemPrompt").toString();
+        defaultProfile.temperature = m_settings.value("temperature", 0.7).toDouble();
+        defaultProfile.maxTokens = m_settings.value("maxTokens", 0).toInt();
+        m_profiles.append(defaultProfile);
+    }
+
+    for (const auto &profile : m_profiles) {
+        m_profileCombo->addItem(profile.name);
+    }
+
+    m_currentProfileName = m_settings.value("currentProfile", m_profiles[0].name).toString();
+    int idx = m_profileCombo->findText(m_currentProfileName);
+    if (idx >= 0) {
+        m_profileCombo->setCurrentIndex(idx);
+    }
+    applyProfile(m_profiles[idx >= 0 ? idx : 0]);
+}
+
+void MainWindow::saveProfiles()
+{
+    QJsonArray arr;
+    for (const auto &profile : m_profiles) {
+        QJsonObject obj;
+        obj["name"] = profile.name;
+        obj["apiKey"] = profile.apiKey;
+        obj["model"] = profile.model;
+        obj["systemPrompt"] = profile.systemPrompt;
+        obj["temperature"] = profile.temperature;
+        obj["maxTokens"] = profile.maxTokens;
+        arr.append(obj);
+    }
+    m_settings.setValue("apiProfiles", QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
+    m_settings.setValue("currentProfile", m_currentProfileName);
+}
+
+void MainWindow::applyProfile(const ApiProfile &profile)
+{
+    m_apiClient->setApiKey(profile.apiKey);
+    m_apiClient->setModel(profile.model);
+    m_apiClient->setSystemPrompt(profile.systemPrompt);
+    m_apiClient->setTemperature(profile.temperature);
+    m_apiClient->setMaxTokens(profile.maxTokens);
+
+    m_modelCombo->setCurrentText(profile.model);
+    if (m_statusModel) {
+        m_statusModel->setText(profile.model);
+    }
+}
+
+void MainWindow::onProfileChanged()
+{
+    QString name = m_profileCombo->currentText();
+    for (const auto &profile : m_profiles) {
+        if (profile.name == name) {
+            m_currentProfileName = name;
+            applyProfile(profile);
+            saveProfiles();
+            break;
+        }
+    }
+}
+
+void MainWindow::onManageProfiles()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle("Manage API Profiles");
+    dialog.setMinimumWidth(500);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    QListWidget *profileList = new QListWidget(&dialog);
+    for (const auto &profile : m_profiles) {
+        profileList->addItem(profile.name);
+    }
+    layout->addWidget(profileList);
+
+    QHBoxLayout *btnLayout = new QHBoxLayout();
+    QPushButton *addBtn = new QPushButton("Add", &dialog);
+    QPushButton *editBtn = new QPushButton("Edit", &dialog);
+    QPushButton *deleteBtn = new QPushButton("Delete", &dialog);
+    btnLayout->addWidget(addBtn);
+    btnLayout->addWidget(editBtn);
+    btnLayout->addWidget(deleteBtn);
+    layout->addLayout(btnLayout);
+
+    QDialogButtonBox *buttonBox = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+
+    auto openProfileDialog = [&](ApiProfile *profile, bool isNew) -> bool {
+        QDialog dlg(&dialog);
+        dlg.setWindowTitle(isNew ? "Add Profile" : "Edit Profile");
+        dlg.setMinimumWidth(400);
+
+        QVBoxLayout *dlgLayout = new QVBoxLayout(&dlg);
+        QFormLayout *form = new QFormLayout();
+
+        QLineEdit *nameEdit = new QLineEdit(&dlg);
+        nameEdit->setText(profile->name);
+        form->addRow("Name:", nameEdit);
+
+        QLineEdit *keyEdit = new QLineEdit(&dlg);
+        keyEdit->setText(profile->apiKey);
+        keyEdit->setEchoMode(QLineEdit::Password);
+        form->addRow("API Key:", keyEdit);
+
+        QLineEdit *modelEdit = new QLineEdit(&dlg);
+        modelEdit->setText(profile->model);
+        form->addRow("Model:", modelEdit);
+
+        QTextEdit *promptEdit = new QTextEdit(&dlg);
+        promptEdit->setPlainText(profile->systemPrompt);
+        promptEdit->setMaximumHeight(80);
+        form->addRow("System Prompt:", promptEdit);
+
+        QDoubleSpinBox *tempSpin = new QDoubleSpinBox(&dlg);
+        tempSpin->setRange(0.0, 2.0);
+        tempSpin->setSingleStep(0.1);
+        tempSpin->setValue(profile->temperature);
+        form->addRow("Temperature:", tempSpin);
+
+        QSpinBox *maxSpin = new QSpinBox(&dlg);
+        maxSpin->setRange(0, 32000);
+        maxSpin->setSingleStep(256);
+        maxSpin->setValue(profile->maxTokens);
+        maxSpin->setSpecialValueText("Unlimited");
+        form->addRow("Max Tokens:", maxSpin);
+
+        dlgLayout->addLayout(form);
+
+        QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+        connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+        connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+        dlgLayout->addWidget(bb);
+
+        if (dlg.exec() == QDialog::Accepted) {
+            profile->name = nameEdit->text().trimmed();
+            profile->apiKey = keyEdit->text();
+            profile->model = modelEdit->text().trimmed();
+            profile->systemPrompt = promptEdit->toPlainText();
+            profile->temperature = tempSpin->value();
+            profile->maxTokens = maxSpin->value();
+            return true;
+        }
+        return false;
+    };
+
+    connect(addBtn, &QPushButton::clicked, [&]() {
+        ApiProfile newProfile;
+        newProfile.name = "New Profile";
+        newProfile.model = "venice-uncensored";
+        newProfile.temperature = 0.7;
+        newProfile.maxTokens = 0;
+        if (openProfileDialog(&newProfile, true)) {
+            if (newProfile.name.isEmpty()) newProfile.name = "Unnamed";
+            m_profiles.append(newProfile);
+            profileList->addItem(newProfile.name);
+            m_profileCombo->addItem(newProfile.name);
+            saveProfiles();
+        }
+    });
+
+    connect(editBtn, &QPushButton::clicked, [&]() {
+        int row = profileList->currentRow();
+        if (row < 0 || row >= m_profiles.size()) return;
+        ApiProfile profile = m_profiles[row];
+        if (openProfileDialog(&profile, false)) {
+            m_profiles[row] = profile;
+            profileList->item(row)->setText(profile.name);
+            m_profileCombo->setItemText(row, profile.name);
+            if (m_currentProfileName == m_profiles[row].name || row == m_profileCombo->currentIndex()) {
+                applyProfile(profile);
+            }
+            saveProfiles();
+        }
+    });
+
+    connect(deleteBtn, &QPushButton::clicked, [&]() {
+        int row = profileList->currentRow();
+        if (row < 0 || row >= m_profiles.size()) return;
+        if (m_profiles.size() <= 1) {
+            QMessageBox::warning(&dialog, "Cannot Delete", "At least one profile must exist.");
+            return;
+        }
+        QString name = m_profiles[row].name;
+        if (QMessageBox::question(&dialog, "Delete Profile", QString("Delete profile '%1'?").arg(name)) == QMessageBox::Yes) {
+            m_profiles.removeAt(row);
+            delete profileList->takeItem(row);
+            m_profileCombo->removeItem(row);
+            if (m_currentProfileName == name) {
+                m_currentProfileName = m_profiles[0].name;
+                m_profileCombo->setCurrentIndex(0);
+                applyProfile(m_profiles[0]);
+            }
+            saveProfiles();
+        }
+    });
+
+    dialog.exec();
+}
+
+void MainWindow::updateContextUsage()
+{
+    if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) {
+        if (m_statusContextUsage) m_statusContextUsage->clear();
+        return;
+    }
+
+    int totalTokens = 0;
+    for (const auto &msg : m_chatSessions[m_currentChatIndex].messages) {
+        totalTokens += msg.totalTokens;
+    }
+
+    QString currentModel = m_modelCombo->currentText();
+    int maxContext = 4096;
+    if (currentModel.contains("uncensored", Qt::CaseInsensitive)) maxContext = 4096;
+    else if (currentModel.contains("large", Qt::CaseInsensitive)) maxContext = 8192;
+    else if (currentModel.contains("medium", Qt::CaseInsensitive)) maxContext = 4096;
+
+    double usage = (double)totalTokens / maxContext * 100.0;
+    QString color = usage < 50 ? "#4ade80" : (usage < 80 ? "#fbbf24" : "#f87171");
+
+    if (m_statusContextUsage) {
+        m_statusContextUsage->setText(QString("Context: %1/%2 (%3%)").arg(totalTokens).arg(maxContext).arg(QString::number(usage, 'f', 1)));
+        m_statusContextUsage->setStyleSheet(QString("QLabel { color: %1; font-size: 12px; }").arg(color));
+    }
+}
+
+void MainWindow::showSearchBar()
+{
+    if (m_searchBar) {
+        m_searchBar->setVisible(true);
+        m_searchBar->m_searchInput->setFocus();
+    }
+}
+
+void MainWindow::hideSearchBar()
+{
+    if (m_searchBar) {
+        m_searchBar->setVisible(false);
+        clearHighlights();
+    }
+}
+
+void MainWindow::onSearchTextChanged(const QString &text)
+{
+    clearHighlights();
+    if (text.isEmpty()) {
+        if (m_searchBar) m_searchBar->m_matchCount->setText("0/0");
+        return;
+    }
+
+    m_highlightedCards.clear();
+    for (int i = 0; i < m_chatLayout->count(); ++i) {
+        QLayoutItem *item = m_chatLayout->itemAt(i);
+        if (auto *widget = item->widget()) {
+            if (auto *card = qobject_cast<ChatMessageCard*>(widget)) {
+                if (card->content().contains(text, Qt::CaseInsensitive)) {
+                    card->highlightText(text);
+                    m_highlightedCards.append(card);
+                }
+            }
+        }
+    }
+
+    m_currentHighlightIndex = m_highlightedCards.isEmpty() ? -1 : 0;
+    if (m_searchBar) {
+        m_searchBar->m_matchCount->setText(
+            m_highlightedCards.isEmpty() ? "0/0" :
+            QString("%1/%2").arg(m_currentHighlightIndex + 1).arg(m_highlightedCards.size())
+        );
+    }
+}
+
+void MainWindow::onFindNext()
+{
+    if (m_highlightedCards.isEmpty()) return;
+    m_currentHighlightIndex = (m_currentHighlightIndex + 1) % m_highlightedCards.size();
+    auto *card = m_highlightedCards[m_currentHighlightIndex];
+    card->setStyleSheet(card->styleSheet());
+    scrollToBottom();
+    if (m_searchBar) {
+        m_searchBar->m_matchCount->setText(QString("%1/%2").arg(m_currentHighlightIndex + 1).arg(m_highlightedCards.size()));
+    }
+}
+
+void MainWindow::onFindPrevious()
+{
+    if (m_highlightedCards.isEmpty()) return;
+    m_currentHighlightIndex = (m_currentHighlightIndex - 1 + m_highlightedCards.size()) % m_highlightedCards.size();
+    auto *card = m_highlightedCards[m_currentHighlightIndex];
+    card->setStyleSheet(card->styleSheet());
+    scrollToBottom();
+    if (m_searchBar) {
+        m_searchBar->m_matchCount->setText(QString("%1/%2").arg(m_currentHighlightIndex + 1).arg(m_highlightedCards.size()));
+    }
+}
+
+void MainWindow::highlightInChat(const QString &text)
+{
+    onSearchTextChanged(text);
+}
+
+void MainWindow::clearHighlights()
+{
+    for (auto *card : m_highlightedCards) {
+        card->clearHighlight();
+    }
+    m_highlightedCards.clear();
+    m_currentHighlightIndex = -1;
+    if (m_searchBar) {
+        m_searchBar->m_matchCount->setText("0/0");
+    }
+}
+
+void MainWindow::updateChatDuration()
+{
+    if (!m_statusDuration) return;
+
+    if (m_chatStartTime.isValid() && m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
+        const auto &chat = m_chatSessions[m_currentChatIndex];
+        if (!chat.messages.isEmpty()) {
+            qint64 secs = m_chatStartTime.secsTo(QDateTime::currentDateTime());
+            int mins = secs / 60;
+            int remainingSecs = secs % 60;
+            m_statusDuration->setText(QString("Duration: %1m %2s").arg(mins).arg(remainingSecs, 2, 10, QChar('0')));
+            return;
+        }
+    }
+    m_statusDuration->clear();
+}
+
+void MainWindow::playNotificationSound()
+{
+    if (!m_soundInitialized) {
+        m_notificationSound = new QSoundEffect(this);
+        m_soundInitialized = true;
+    }
+    if (m_notificationSound && m_notificationSound->isLoaded()) {
+        m_notificationSound->play();
+    }
+}
+
+void MainWindow::showShortcutsDialog()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle("Keyboard Shortcuts");
+    dialog.setMinimumWidth(400);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    QTableWidget *table = new QTableWidget(&dialog);
+    table->setColumnCount(2);
+    table->setHorizontalHeaderLabels({"Shortcut", "Action"});
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->verticalHeader()->setVisible(false);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setStyleSheet(
+        "QTableWidget { "
+        "  background-color: #2f2f2f; "
+        "  color: #ececf1; "
+        "  gridline-color: #4d4d4f; "
+        "  border: 1px solid #4d4d4f; "
+        "  font-size: 13px; "
+        "} "
+        "QHeaderView::section { "
+        "  background-color: #1a1a1a; "
+        "  color: #ececf1; "
+        "  padding: 4px; "
+        "  border: 1px solid #4d4d4f; "
+        "}"
+    );
+
+    QList<QPair<QString, QString>> shortcuts = {
+        {"Ctrl+N", "New Chat"},
+        {"Ctrl+E", "Export Chat"},
+        {"Ctrl+,", "Settings"},
+        {"Ctrl+Shift+S", "Advanced Settings"},
+        {"Ctrl+Q", "Quit"},
+        {"Ctrl+F", "Search in Chat"},
+        {"Ctrl+T", "Toggle Theme"},
+        {"Ctrl+=", "Increase Font Size"},
+        {"Ctrl+-", "Decrease Font Size"},
+        {"Ctrl+0", "Reset Font Size"},
+        {"Ctrl+?", "Show Shortcuts"},
+        {"Enter", "Send Message"},
+        {"Shift+Enter", "New Line"},
+    };
+
+    table->setRowCount(shortcuts.size());
+    for (int i = 0; i < shortcuts.size(); ++i) {
+        table->setItem(i, 0, new QTableWidgetItem(shortcuts[i].first));
+        table->setItem(i, 1, new QTableWidgetItem(shortcuts[i].second));
+    }
+
+    layout->addWidget(table);
+
+    QDialogButtonBox *buttonBox = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+
+    dialog.exec();
+}
+
+void MainWindow::updateStreamingSpeed(const QString &chunk)
+{
+    if (m_streamStartTime == 0 || !m_statusSpeed) return;
+
+    qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - m_streamStartTime;
+    if (elapsed > 0) {
+        double speed = (double)m_streamTokenCount / (elapsed / 1000.0);
+        m_statusSpeed->setText(QString("%1 tok/s").arg(speed, 0, 'f', 1));
+    }
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (event->mimeData()->hasUrls()) {
+        for (const QUrl &url : event->mimeData()->urls()) {
+            QString suffix = url.toLocalFile().toLower();
+            if (suffix.endsWith(".png") || suffix.endsWith(".jpg") || suffix.endsWith(".jpeg") ||
+                suffix.endsWith(".gif") || suffix.endsWith(".bmp") || suffix.endsWith(".webp")) {
+                event->acceptProposedAction();
+                return;
+            }
+        }
+    }
+}
+
+void MainWindow::dragMoveEvent(QDragMoveEvent *event)
+{
+    if (event->mimeData()->hasUrls()) {
+        event->acceptProposedAction();
+    }
+}
+
+void MainWindow::dropEvent(QDropEvent *event)
+{
+    const QMimeData *mimeData = event->mimeData();
+    if (mimeData->hasUrls()) {
+        for (const QUrl &url : mimeData->urls()) {
+            QString filePath = url.toLocalFile();
+            QString lowerPath = filePath.toLower();
+            if (lowerPath.endsWith(".png") || lowerPath.endsWith(".jpg") || lowerPath.endsWith(".jpeg") ||
+                lowerPath.endsWith(".gif") || lowerPath.endsWith(".bmp") || lowerPath.endsWith(".webp")) {
+                QFile file(filePath);
+                if (file.open(QIODevice::ReadOnly)) {
+                    QByteArray data = file.readAll();
+                    QString base64 = QString("data:image/jpeg;base64,") + data.toBase64();
+                    m_currentChatImage = base64;
+
+                    QPixmap pixmap;
+                    pixmap.load(filePath);
+                    if (!pixmap.isNull()) {
+                        m_imagePreview->setPixmap(pixmap.scaled(200, 60, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                        m_imagePreview->setVisible(true);
+                    }
+                }
+                break;
+            }
+        }
+    }
+}
+
+void MainWindow::onToggleAutoScroll()
+{
+    m_autoScroll = m_autoScrollToggle->isChecked();
+    m_settings.setValue("autoScroll", m_autoScroll);
+}
+
+void MainWindow::adjustFontSize(int delta)
+{
+    m_chatFontSize = qBound(10, m_chatFontSize + delta, 30);
+    applyChatFontSize();
+}
+
+void MainWindow::resetFontSize()
+{
+    m_chatFontSize = 15;
+    applyChatFontSize();
+}
+
+void MainWindow::applyChatFontSize()
+{
+    QString fontSizeStyle = QString("font-size: %1px;").arg(m_chatFontSize);
+    for (int i = 0; i < m_chatLayout->count(); ++i) {
+        QLayoutItem *item = m_chatLayout->itemAt(i);
+        if (auto *widget = item->widget()) {
+            if (auto *card = qobject_cast<ChatMessageCard*>(widget)) {
+                QLabel *label = widget->findChild<QLabel*>();
+                if (label && label != m_thinkingIndicator) {
+                    label->setStyleSheet(label->styleSheet() + " " + fontSizeStyle);
+                }
+            }
+        }
+    }
+}
+
+void MainWindow::onApiErrorWithRetry(const QString &error)
+{
+    m_retryCount++;
+    if (m_retryCount <= m_maxRetries) {
+        int delayMs = (1 << (m_retryCount - 1)) * 1000;
+        if (m_statusConnection) {
+            m_statusConnection->setText(QString("Retrying (%1/%2)...").arg(m_retryCount).arg(m_maxRetries));
+        }
+        m_retryTimer->singleShot(delayMs, this, [this]() {
+            if (!m_pendingMessages.isEmpty()) {
+                m_apiClient->sendMessage(m_pendingMessages);
+            }
+        });
+    } else {
+        m_retryCount = 0;
+        onErrorOccurred(error);
+    }
 }

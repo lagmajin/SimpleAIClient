@@ -23,6 +23,9 @@
 #include <QShortcut>
 #include <QStatusBar>
 #include <QPixmap>
+#include <QEnterEvent>
+#include <QDateTime>
+#include <QSoundEffect>
 #include "apiclient.h"
 
 struct ChatSession {
@@ -30,6 +33,15 @@ struct ChatSession {
     QString title;
     QList<ChatMessage> messages;
     bool pinned;
+};
+
+struct ApiProfile {
+    QString name;
+    QString apiKey;
+    QString model;
+    QString systemPrompt;
+    double temperature;
+    int maxTokens;
 };
 
 class AvatarLabel : public QLabel {
@@ -40,7 +52,7 @@ public:
 class ChatListItem : public QWidget {
     Q_OBJECT
 public:
-    ChatListItem(const QString &title, int index, QWidget *parent = nullptr);
+    ChatListItem(const QString &title, int index, bool isPinned, QWidget *parent = nullptr);
     int index() const { return m_index; }
 
 signals:
@@ -50,12 +62,13 @@ signals:
     void pinRequested(int index);
 
 protected:
-    void enterEvent(QEvent *event) override;
+    void enterEvent(QEnterEvent *event) override;
     void leaveEvent(QEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
 
 private:
     int m_index;
+    bool m_isPinned;
     QLabel *m_iconLabel;
     QLabel *m_titleLabel;
     QToolButton *m_deleteBtn;
@@ -76,8 +89,13 @@ public:
     void setEditable(bool editable);
     void startEditing();
     QString content() const { return m_fullContent; }
-    void setContent(const QString &content);
-    void setContent(const QString &content);
+    void highlightText(const QString &text);
+    void clearHighlight();
+    void setTimestamp(const QDateTime &timestamp);
+
+protected:
+    void enterEvent(QEnterEvent *event) override;
+    void leaveEvent(QEvent *event) override;
 
 signals:
     void copyRequested(const QString &text);
@@ -103,13 +121,36 @@ private:
     QPushButton *m_copyBtn;
     QLabel *m_streamLabel;
     QLabel *m_tokenLabel;
-    QPushButton *m_copyBtn;
     QPushButton *m_regenerateBtn;
     QPushButton *m_branchBtn;
     QPushButton *m_editBtn;
     QTextEdit *m_editField;
     int m_messageIndex;
     bool m_isStreaming;
+    QDateTime m_timestamp;
+    QLabel *m_timestampLabel;
+};
+
+class ChatSearchBar : public QFrame {
+    Q_OBJECT
+public:
+    ChatSearchBar(QWidget *parent = nullptr);
+    QLineEdit *m_searchInput;
+    QLabel *m_matchCount;
+
+signals:
+    void searchTextChanged(const QString &text);
+    void findNext();
+    void findPrevious();
+    void closed();
+
+private slots:
+    void onClose();
+
+private:
+    QPushButton *m_prevBtn;
+    QPushButton *m_nextBtn;
+    QPushButton *m_closeBtn;
 };
 
 class MainWindow : public QMainWindow
@@ -132,16 +173,25 @@ private slots:
     void onRegenerateResponse();
     void onBranchConversation(int messageIndex);
     void onEditMessage(int messageIndex, const QString &newContent);
-    void onEditMessage(int messageIndex, const QString &newContent);
     void onAttachImage();
     void onModelsFetched(const QStringList &models);
     void onModelChanged(const QString &model);
     void onNewChat();
     void onChatSelected(QListWidgetItem *current, QListWidgetItem *previous);
     void onDeleteChat();
+    void onProfileChanged();
+    void onManageProfiles();
+    void onSearchTextChanged(const QString &text);
+    void onFindNext();
+    void onFindPrevious();
+    void onToggleAutoScroll();
+    void onApiErrorWithRetry(const QString &error);
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dragMoveEvent(QDragMoveEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
 
 private:
     void setupUI();
@@ -158,6 +208,7 @@ private:
     QString generateChatTitle(const QString &firstMessage);
     void clearChatDisplay();
     void addMessageCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0, int responseTimeMs = 0);
+    ChatMessageCard* addMessageCardWithCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0, int responseTimeMs = 0);
     void scrollToBottom();
     void applyModelFilter();
     void deleteChatAtRow(int row);
@@ -165,11 +216,31 @@ private:
     void togglePinChat(int row);
     void showWelcomeScreen();
     void hideWelcomeScreen();
+    void showThinkingIndicator();
+    void hideThinkingIndicator();
     void filterChats(const QString &query);
     void saveDraft();
     void loadDraft();
     void clearDraft();
     void applyTheme();
+    void updateCharCounter();
+    void handleQuickCommand(const QString &command);
+    void loadProfiles();
+    void saveProfiles();
+    void applyProfile(const ApiProfile &profile);
+    void updateContextUsage();
+    void showSearchBar();
+    void hideSearchBar();
+    void highlightInChat(const QString &text);
+    void clearHighlights();
+    void adjustFontSize(int delta);
+    void resetFontSize();
+    void applyChatFontSize();
+    void showDraftWarning();
+    void playNotificationSound();
+    void updateChatDuration();
+    void showShortcutsDialog();
+    void updateStreamingSpeed(const QString &chunk);
 
     QWidget *m_sidebar;
     QLabel *m_appTitle;
@@ -185,9 +256,11 @@ private:
     QToolButton *m_sendButton;
     QToolButton *m_attachButton;
     QComboBox *m_modelCombo;
+    QComboBox *m_profileCombo;
     QCheckBox *m_uncensoredFilter;
     QCheckBox *m_streamToggle;
     QCheckBox *m_webSearchToggle;
+    QCheckBox *m_autoScrollToggle;
     QSplitter *m_splitter;
     ApiClient *m_apiClient;
     QList<ChatSession> m_chatSessions;
@@ -202,7 +275,30 @@ private:
     QLabel *m_statusTokens;
     QLabel *m_statusConnection;
     QLabel *m_statusResponseTime;
+    QLabel *m_statusContextUsage;
     bool m_isDarkTheme;
+    QLabel *m_thinkingIndicator;
+    QTimer *m_thinkingTimer;
+    int m_thinkingDots;
+    QLabel *m_charCounter;
+    ChatSearchBar *m_searchBar;
+    QList<ChatMessageCard*> m_highlightedCards;
+    int m_currentHighlightIndex;
+    QList<ApiProfile> m_profiles;
+    QString m_currentProfileName;
+    bool m_autoScroll;
+    int m_chatFontSize;
+    int m_retryCount;
+    int m_maxRetries;
+    QTimer *m_retryTimer;
+    QList<ChatMessage> m_pendingMessages;
+    QSoundEffect *m_notificationSound;
+    bool m_soundInitialized;
+    QDateTime m_chatStartTime;
+    QLabel *m_statusDuration;
+    QLabel *m_statusSpeed;
+    qint64 m_streamStartTime;
+    int m_streamTokenCount;
 };
 
 #endif // MAINWINDOW_H
