@@ -52,8 +52,9 @@ public:
 class ChatListItem : public QWidget {
     Q_OBJECT
 public:
-    ChatListItem(const QString &title, int index, bool isPinned, QWidget *parent = nullptr);
+    ChatListItem(const QString &title, const QString &subtitle, int index, bool isPinned, QWidget *parent = nullptr);
     int index() const { return m_index; }
+    void setActive(bool active);
 
 signals:
     void clicked(int index);
@@ -67,10 +68,12 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
 
 private:
+    bool m_isActive;
     int m_index;
     bool m_isPinned;
     QLabel *m_iconLabel;
     QLabel *m_titleLabel;
+    QLabel *m_subtitleLabel;
     QToolButton *m_deleteBtn;
 };
 
@@ -200,12 +203,17 @@ private:
     void saveSettings();
     bool checkApiKey();
     void fetchModels();
+    void restoreModelSelection();
     void createNewChat();
     void switchToChat(int index);
     void updateChatList();
     void saveChatSessions();
     void loadChatSessions();
     QString generateChatTitle(const QString &firstMessage);
+    void refreshChatViewport();
+    void removeTrailingSpacer();
+    void appendBottomSpacer();
+    void rebuildCurrentChatView();
     void clearChatDisplay();
     void addMessageCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0, int responseTimeMs = 0);
     ChatMessageCard* addMessageCardWithCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0, int responseTimeMs = 0);
@@ -228,6 +236,7 @@ private:
     void loadProfiles();
     void saveProfiles();
     void applyProfile(const ApiProfile &profile);
+    void updateHeaderState();
     void updateContextUsage();
     void showSearchBar();
     void hideSearchBar();
@@ -244,6 +253,8 @@ private:
 
     QWidget *m_sidebar;
     QLabel *m_appTitle;
+    QLabel *m_headerTitle;
+    QLabel *m_headerSubtitle;
     QLineEdit *m_searchField;
     QScrollArea *m_chatListScroll;
     QWidget *m_chatListContainer;
@@ -277,6 +288,7 @@ private:
     QLabel *m_statusResponseTime;
     QLabel *m_statusContextUsage;
     bool m_isDarkTheme;
+    QWidget *m_thinkingRowWidget;
     QLabel *m_thinkingIndicator;
     QTimer *m_thinkingTimer;
     int m_thinkingDots;
