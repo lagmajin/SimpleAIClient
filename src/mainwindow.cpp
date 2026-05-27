@@ -885,6 +885,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_currentHighlightIndex(-1)
     , m_currentProfileName("")
     , m_autoScroll(true)
+    , m_scrollToBottomQueued(false)
+    , m_scrollToBottomForcePending(false)
     , m_chatFontSize(15)
     , m_retryCount(0)
     , m_maxRetries(3)
@@ -1297,7 +1299,7 @@ void MainWindow::setupUI()
     inputWithCounter->addWidget(composerHint, 0, Qt::AlignLeft);
 
     QWidget *inputWrapper = new QWidget(inputFrame);
-    inputWrapper->setMaximumWidth(980);
+    inputWrapper->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     inputWrapper->setStyleSheet(QString(
         "QWidget { background-color: %1; border: 1px solid %2; border-radius: 22px; }")
         .arg(cardSurfaceAlt).arg(panelBorder));
@@ -1337,10 +1339,8 @@ void MainWindow::setupUI()
     inputWrapperLayout->addLayout(inputFooter);
 
     QHBoxLayout *inputLayout = new QHBoxLayout();
-    inputLayout->setContentsMargins(28, 0, 28, 0);
-    inputLayout->addStretch();
-    inputLayout->addWidget(inputWrapper);
-    inputLayout->addStretch();
+    inputLayout->setContentsMargins(18, 0, 18, 0);
+    inputLayout->addWidget(inputWrapper, 1);
     inputWithCounter->addLayout(inputLayout);
     mainLayout->addWidget(inputFrame);
 
@@ -1681,10 +1681,29 @@ void MainWindow::appendBottomSpacer()
 
 void MainWindow::rebuildCurrentChatView()
 {
-    clearChatDisplay();
+    if (!m_chatContainer || !m_scrollArea) {
+        return;
+    }
+
+    m_chatContainer->setUpdatesEnabled(false);
+    if (QWidget *viewport = m_scrollArea->viewport()) {
+        viewport->setUpdatesEnabled(false);
+    }
+
+    auto restoreUpdates = [this]() {
+        if (m_scrollArea && m_scrollArea->viewport()) {
+            m_scrollArea->viewport()->setUpdatesEnabled(true);
+        }
+        if (m_chatContainer) {
+            m_chatContainer->setUpdatesEnabled(true);
+        }
+    };
+
+    clearChatDisplay(false);
 
     if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) {
         showWelcomeScreen();
+        restoreUpdates();
         refreshChatViewport();
         return;
     }
@@ -1712,10 +1731,11 @@ void MainWindow::rebuildCurrentChatView()
         }
     }
 
+    restoreUpdates();
     refreshChatViewport();
 }
 
-void MainWindow::clearChatDisplay()
+void MainWindow::clearChatDisplay(bool refresh)
 {
     QLayoutItem *item;
     while ((item = m_chatLayout->takeAt(0)) != nullptr) {
@@ -1730,7 +1750,9 @@ void MainWindow::clearChatDisplay()
     m_streamingCard = nullptr;
     m_thinkingRowWidget = nullptr;
     m_thinkingIndicator = nullptr;
-    refreshChatViewport();
+    if (refresh) {
+        refreshChatViewport();
+    }
 }
 
 void MainWindow::addMessageCard(const QString &role, const QString &content, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs)
@@ -1772,13 +1794,43 @@ ChatMessageCard* MainWindow::addMessageCardWithCard(const QString &role, const Q
     return card;
 }
 
-void MainWindow::scrollToBottom()
+bool MainWindow::isNearBottom(int tolerance) const
+{
+    if (!m_scrollArea) {
+        return true;
+    }
+
+    QScrollBar *bar = m_scrollArea->verticalScrollBar();
+    if (!bar) {
+        return true;
+    }
+
+    return (bar->maximum() - bar->value()) <= tolerance;
+}
+
+void MainWindow::scrollToBottom(bool force)
 {
     if (!m_autoScroll) return;
-    QScrollBar *bar = m_scrollArea->verticalScrollBar();
-    QMetaObject::invokeMethod(bar, [bar]() {
-        bar->setValue(bar->maximum());
-    }, Qt::QueuedConnection);
+    if (force) {
+        m_scrollToBottomForcePending = true;
+    } else if (!isNearBottom()) {
+        return;
+    }
+
+    if (m_scrollToBottomQueued) return;
+    m_scrollToBottomQueued = true;
+
+    QTimer::singleShot(0, this, [this]() {
+        bool forceScroll = m_scrollToBottomForcePending;
+        m_scrollToBottomQueued = false;
+        m_scrollToBottomForcePending = false;
+        if (!m_autoScroll || !m_scrollArea) return;
+        if (!forceScroll && !isNearBottom()) return;
+        QScrollBar *bar = m_scrollArea->verticalScrollBar();
+        if (bar) {
+            bar->setValue(bar->maximum());
+        }
+    });
 }
 
 void MainWindow::showWelcomeScreen()
@@ -2028,7 +2080,7 @@ void MainWindow::onResponseChunk(const QString &chunk)
             m_streamingCard->appendContent(trimmed);
             m_streamTokenCount++;
             updateStreamingSpeed(trimmed);
-            scrollToBottom();
+            scrollToBottom(false);
         }
     }
     if (m_statusConnection) {

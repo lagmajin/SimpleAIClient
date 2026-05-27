@@ -214,10 +214,11 @@ private:
     void removeTrailingSpacer();
     void appendBottomSpacer();
     void rebuildCurrentChatView();
-    void clearChatDisplay();
+    void clearChatDisplay(bool refresh = true);
     void addMessageCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0, int responseTimeMs = 0);
     ChatMessageCard* addMessageCardWithCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0, int responseTimeMs = 0);
-    void scrollToBottom();
+    void scrollToBottom(bool force = true);
+    bool isNearBottom(int tolerance = 48) const;
     void applyModelFilter();
     void deleteChatAtRow(int row);
     void renameChat(int row);
@@ -299,6 +300,8 @@ private:
     QList<ApiProfile> m_profiles;
     QString m_currentProfileName;
     bool m_autoScroll;
+    bool m_scrollToBottomQueued;
+    bool m_scrollToBottomForcePending;
     int m_chatFontSize;
     int m_retryCount;
     int m_maxRetries;
