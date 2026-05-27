@@ -216,7 +216,8 @@ private:
     void rebuildCurrentChatView();
     void clearChatDisplay(bool refresh = true);
     void addMessageCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0, int responseTimeMs = 0);
-    ChatMessageCard* addMessageCardWithCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0, int responseTimeMs = 0);
+    ChatMessageCard* addMessageCardWithCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0, int responseTimeMs = 0, bool prepend = false);
+    void continueChatHistoryRender(int generation);
     void scrollToBottom(bool force = true);
     bool isNearBottom(int tolerance = 48) const;
     void applyModelFilter();
@@ -302,6 +303,8 @@ private:
     bool m_autoScroll;
     bool m_scrollToBottomQueued;
     bool m_scrollToBottomForcePending;
+    int m_chatRenderGeneration;
+    int m_chatRenderCursor;
     int m_chatFontSize;
     int m_retryCount;
     int m_maxRetries;

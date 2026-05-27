@@ -887,6 +887,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_autoScroll(true)
     , m_scrollToBottomQueued(false)
     , m_scrollToBottomForcePending(false)
+    , m_chatRenderGeneration(0)
+    , m_chatRenderCursor(-1)
     , m_chatFontSize(15)
     , m_retryCount(0)
     , m_maxRetries(3)
@@ -1685,25 +1687,13 @@ void MainWindow::rebuildCurrentChatView()
         return;
     }
 
-    m_chatContainer->setUpdatesEnabled(false);
-    if (QWidget *viewport = m_scrollArea->viewport()) {
-        viewport->setUpdatesEnabled(false);
-    }
-
-    auto restoreUpdates = [this]() {
-        if (m_scrollArea && m_scrollArea->viewport()) {
-            m_scrollArea->viewport()->setUpdatesEnabled(true);
-        }
-        if (m_chatContainer) {
-            m_chatContainer->setUpdatesEnabled(true);
-        }
-    };
+    ++m_chatRenderGeneration;
+    const int renderGeneration = m_chatRenderGeneration;
 
     clearChatDisplay(false);
 
     if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) {
         showWelcomeScreen();
-        restoreUpdates();
         refreshChatViewport();
         return;
     }
@@ -1711,28 +1701,12 @@ void MainWindow::rebuildCurrentChatView()
     const auto &chat = m_chatSessions[m_currentChatIndex];
     if (chat.messages.isEmpty()) {
         showWelcomeScreen();
+        refreshChatViewport();
     } else {
         hideWelcomeScreen();
-        for (const auto &msg : chat.messages) {
-            QString displayText = msg.content;
-            if (!msg.imageUrl.isEmpty()) {
-                displayText += "\n[Image attached]";
-            }
-            ChatMessageCard *card = addMessageCardWithCard(
-                msg.role,
-                displayText,
-                msg.promptTokens,
-                msg.completionTokens,
-                msg.totalTokens
-            );
-            if (card) {
-                card->setTimestamp(QDateTime::currentDateTime());
-            }
-        }
+        m_chatRenderCursor = chat.messages.size() - 1;
+        continueChatHistoryRender(renderGeneration);
     }
-
-    restoreUpdates();
-    refreshChatViewport();
 }
 
 void MainWindow::clearChatDisplay(bool refresh)
@@ -1760,7 +1734,7 @@ void MainWindow::addMessageCard(const QString &role, const QString &content, int
     addMessageCardWithCard(role, content, promptTokens, completionTokens, totalTokens, responseTimeMs);
 }
 
-ChatMessageCard* MainWindow::addMessageCardWithCard(const QString &role, const QString &content, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs)
+ChatMessageCard* MainWindow::addMessageCardWithCard(const QString &role, const QString &content, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs, bool prepend)
 {
     hideWelcomeScreen();
 
@@ -1789,9 +1763,63 @@ ChatMessageCard* MainWindow::addMessageCardWithCard(const QString &role, const Q
         card->setTokenInfo(promptTokens, completionTokens, totalTokens, responseTimeMs);
     }
 
-    m_chatLayout->addWidget(card);
+    if (prepend) {
+        m_chatLayout->insertWidget(0, card);
+    } else {
+        m_chatLayout->addWidget(card);
+    }
     appendBottomSpacer();
     return card;
+}
+
+void MainWindow::continueChatHistoryRender(int generation)
+{
+    if (generation != m_chatRenderGeneration) {
+        return;
+    }
+
+    if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) {
+        return;
+    }
+
+    const auto &chat = m_chatSessions[m_currentChatIndex];
+    if (chat.messages.isEmpty()) {
+        return;
+    }
+
+    constexpr int kBatchSize = 8;
+    int rendered = 0;
+    while (m_chatRenderCursor >= 0 && rendered < kBatchSize) {
+        const auto &msg = chat.messages[m_chatRenderCursor];
+        QString displayText = msg.content;
+        if (!msg.imageUrl.isEmpty()) {
+            displayText += "\n[Image attached]";
+        }
+        ChatMessageCard *card = addMessageCardWithCard(
+            msg.role,
+            displayText,
+            msg.promptTokens,
+            msg.completionTokens,
+            msg.totalTokens,
+            0,
+            true
+        );
+        if (card) {
+            card->setMessageIndex(m_chatRenderCursor);
+            card->setTimestamp(QDateTime::currentDateTime());
+        }
+        --m_chatRenderCursor;
+        ++rendered;
+    }
+
+    refreshChatViewport();
+    scrollToBottom(true);
+
+    if (m_chatRenderCursor >= 0) {
+        QTimer::singleShot(0, this, [this, generation]() {
+            continueChatHistoryRender(generation);
+        });
+    }
 }
 
 bool MainWindow::isNearBottom(int tolerance) const
