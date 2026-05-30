@@ -229,6 +229,7 @@ private:
     void showThinkingIndicator();
     void hideThinkingIndicator();
     void filterChats(const QString &query);
+    void continueChatListRender(int generation);
     void saveDraft();
     void loadDraft();
     void clearDraft();
@@ -305,6 +306,9 @@ private:
     bool m_scrollToBottomForcePending;
     int m_chatRenderGeneration;
     int m_chatRenderCursor;
+    int m_chatListRenderGeneration;
+    QList<int> m_chatListRenderIndices;
+    int m_chatListRenderCursor;
     int m_chatFontSize;
     int m_retryCount;
     int m_maxRetries;

@@ -890,6 +890,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_scrollToBottomForcePending(false)
     , m_chatRenderGeneration(0)
     , m_chatRenderCursor(-1)
+    , m_chatListRenderGeneration(0)
+    , m_chatListRenderCursor(0)
     , m_chatFontSize(15)
     , m_retryCount(0)
     , m_maxRetries(3)
@@ -1523,6 +1525,9 @@ void MainWindow::filterChats(const QString &query)
     }
 
     QString lowerQuery = query.toLower();
+    ++m_chatListRenderGeneration;
+    const int renderGeneration = m_chatListRenderGeneration;
+    m_chatListRenderIndices.clear();
 
     QList<int> pinnedIndices;
     QList<int> unpinnedIndices;
@@ -1537,9 +1542,34 @@ void MainWindow::filterChats(const QString &query)
         }
     }
 
-    QList<int> orderedIndices = pinnedIndices + unpinnedIndices;
+    m_chatListRenderIndices = pinnedIndices + unpinnedIndices;
+    m_chatListRenderCursor = 0;
 
-    for (int idx : orderedIndices) {
+    layout->addStretch();
+    continueChatListRender(renderGeneration);
+}
+
+void MainWindow::continueChatListRender(int generation)
+{
+    if (generation != m_chatListRenderGeneration) {
+        return;
+    }
+
+    QVBoxLayout *layout = qobject_cast<QVBoxLayout*>(m_chatListContainer->layout());
+    if (!layout) return;
+
+    const int total = m_chatListRenderIndices.size();
+    if (m_chatListRenderCursor >= total) {
+        return;
+    }
+
+    constexpr int kBatchSize = 14;
+    int rendered = 0;
+    QElapsedTimer timer;
+    timer.start();
+
+    while (m_chatListRenderCursor < total && rendered < kBatchSize) {
+        int idx = m_chatListRenderIndices[m_chatListRenderCursor++];
         const ChatSession &chat = m_chatSessions[idx];
         QStringList metaParts;
         if (chat.messages.isEmpty()) {
@@ -1561,7 +1591,7 @@ void MainWindow::filterChats(const QString &query)
         if (idx == m_currentChatIndex) {
             chatItem->setActive(true);
         }
-        layout->insertWidget(layout->count(), chatItem);
+        layout->insertWidget(layout->count() - 1, chatItem);
 
         connect(chatItem, &ChatListItem::clicked, this, [this, idx]() {
             switchToChat(idx);
@@ -1576,9 +1606,18 @@ void MainWindow::filterChats(const QString &query)
         connect(chatItem, &ChatListItem::pinRequested, this, [this, idx]() {
             togglePinChat(idx);
         });
+
+        ++rendered;
+        if (timer.elapsed() >= 8) {
+            break;
+        }
     }
 
-    layout->addStretch();
+    if (m_chatListRenderCursor < total) {
+        QTimer::singleShot(0, this, [this, generation]() {
+            continueChatListRender(generation);
+        });
+    }
 }
 
 void MainWindow::saveChatSessions()
