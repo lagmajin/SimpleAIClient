@@ -912,13 +912,6 @@ MainWindow::MainWindow(QWidget *parent)
     loadSettings();
     loadChatSessions();
 
-    if (m_chatSessions.isEmpty()) {
-        createNewChat();
-    } else {
-        switchToChat(0);
-        updateChatList();
-    }
-
     m_inputField->installEventFilter(this);
 
     new QShortcut(QKeySequence("Ctrl+N"), this, SLOT(onNewChat()));
@@ -943,8 +936,16 @@ MainWindow::MainWindow(QWidget *parent)
     new QShortcut(QKeySequence("Ctrl+0"), this, [this]() { resetFontSize(); });
     new QShortcut(QKeySequence("Ctrl+?"), this, [this]() { showShortcutsDialog(); });
 
-    updateChatList();
-    fetchModels();
+    QTimer::singleShot(0, this, [this]() {
+        if (m_chatSessions.isEmpty()) {
+            createNewChat();
+        } else {
+            switchToChat(0);
+            updateChatList();
+        }
+
+        fetchModels();
+    });
 }
 
 void MainWindow::setupUI()
