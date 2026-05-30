@@ -33,6 +33,7 @@ struct ChatSession {
     QString title;
     QList<ChatMessage> messages;
     bool pinned;
+    int scrollPosition = 0;
 };
 
 struct ApiProfile {
@@ -230,6 +231,8 @@ private:
     void hideThinkingIndicator();
     void filterChats(const QString &query);
     void continueChatListRender(int generation);
+    void saveCurrentChatScrollPosition();
+    void restoreCurrentChatScrollPosition();
     void saveDraft();
     void loadDraft();
     void clearDraft();

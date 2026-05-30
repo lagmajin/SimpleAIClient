@@ -1289,6 +1289,9 @@ void MainWindow::setupUI()
     m_chatLayout->addStretch();
 
     m_scrollArea->setWidget(m_chatContainer);
+    connect(m_scrollArea->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
+        saveCurrentChatScrollPosition();
+    });
     mainLayout->addWidget(m_scrollArea, 1);
 
     QFrame *inputFrame = new QFrame(mainPanel);
@@ -1494,12 +1497,12 @@ void MainWindow::switchToChat(int index)
     }
 
     saveDraft();
+    saveCurrentChatScrollPosition();
 
     m_currentChatIndex = index;
     rebuildCurrentChatView();
 
     loadDraft();
-    scrollToBottom();
     updateHeaderState();
     updateContextUsage();
     updateChatDuration();
@@ -1628,6 +1631,7 @@ void MainWindow::saveChatSessions()
         sessionObj["id"] = chat.id;
         sessionObj["title"] = chat.title;
         sessionObj["pinned"] = chat.pinned;
+        sessionObj["scrollPosition"] = chat.scrollPosition;
 
         QJsonArray messagesArray;
         for (const auto &msg : chat.messages) {
@@ -1663,6 +1667,7 @@ void MainWindow::loadChatSessions()
         chat.id = sessionObj["id"].toString();
         chat.title = sessionObj["title"].toString();
         chat.pinned = sessionObj["pinned"].toBool();
+        chat.scrollPosition = sessionObj["scrollPosition"].toInt();
 
         QJsonArray messagesArray = sessionObj["messages"].toArray();
         for (const auto &msgVal : messagesArray) {
@@ -1866,13 +1871,43 @@ void MainWindow::continueChatHistoryRender(int generation)
     }
 
     refreshChatViewport();
-    scrollToBottom(true);
 
     if (m_chatRenderCursor >= 0) {
         QTimer::singleShot(0, this, [this, generation]() {
             continueChatHistoryRender(generation);
         });
+    } else {
+        restoreCurrentChatScrollPosition();
     }
+}
+
+void MainWindow::saveCurrentChatScrollPosition()
+{
+    if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size() || !m_scrollArea) {
+        return;
+    }
+
+    if (QScrollBar *bar = m_scrollArea->verticalScrollBar()) {
+        m_chatSessions[m_currentChatIndex].scrollPosition = bar->value();
+    }
+}
+
+void MainWindow::restoreCurrentChatScrollPosition()
+{
+    if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size() || !m_scrollArea) {
+        return;
+    }
+
+    const int savedPosition = m_chatSessions[m_currentChatIndex].scrollPosition;
+    QTimer::singleShot(0, this, [this, savedPosition]() {
+        if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size() || !m_scrollArea) {
+            return;
+        }
+
+        if (QScrollBar *bar = m_scrollArea->verticalScrollBar()) {
+            bar->setValue(qBound(0, savedPosition, bar->maximum()));
+        }
+    });
 }
 
 bool MainWindow::isNearBottom(int tolerance) const
@@ -2501,6 +2536,7 @@ void MainWindow::onModelChanged(const QString &model)
 {
     m_apiClient->setModel(model);
     m_settings.setValue("model", model);
+    m_settings.setValue("lastModel", model);
     if (m_statusModel) {
         m_statusModel->setText(model);
     }
@@ -2510,6 +2546,7 @@ void MainWindow::onModelChanged(const QString &model)
 void MainWindow::onNewChat()
 {
     saveDraft();
+    saveCurrentChatScrollPosition();
     createNewChat();
     m_inputField->setFocus();
 }
@@ -2800,7 +2837,7 @@ void MainWindow::updateHeaderState()
 
 void MainWindow::restoreModelSelection()
 {
-    QString model = m_settings.value("model", "venice-uncensored").toString();
+    QString model = m_settings.value("lastModel", m_settings.value("model", "venice-uncensored")).toString();
     if (model.isEmpty()) {
         model = "venice-uncensored";
     }
@@ -2827,6 +2864,7 @@ void MainWindow::onProfileChanged()
             m_currentProfileName = name;
             applyProfile(profile);
             m_settings.setValue("model", profile.model);
+            m_settings.setValue("lastModel", profile.model);
             saveProfiles();
             updateHeaderState();
             break;
