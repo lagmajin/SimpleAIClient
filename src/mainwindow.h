@@ -224,8 +224,8 @@ private:
     void deleteChatAtRow(int row);
     void renameChat(int row);
     void togglePinChat(int row);
-    void showWelcomeScreen();
-    void hideWelcomeScreen();
+    void showWelcomeScreen(bool refresh = true);
+    void hideWelcomeScreen(bool refresh = true);
     void showThinkingIndicator();
     void hideThinkingIndicator();
     void filterChats(const QString &query);

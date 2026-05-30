@@ -30,6 +30,7 @@
 #include <QPalette>
 #include <QDialog>
 #include <QFormLayout>
+#include <QElapsedTimer>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QSlider>
@@ -1736,7 +1737,7 @@ void MainWindow::addMessageCard(const QString &role, const QString &content, int
 
 ChatMessageCard* MainWindow::addMessageCardWithCard(const QString &role, const QString &content, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs, bool prepend)
 {
-    hideWelcomeScreen();
+    hideWelcomeScreen(false);
 
     removeTrailingSpacer();
     ChatMessageCard *card = new ChatMessageCard(role, content, m_chatContainer);
@@ -1787,9 +1788,18 @@ void MainWindow::continueChatHistoryRender(int generation)
         return;
     }
 
-    constexpr int kBatchSize = 8;
+    const bool firstChunk = (m_chatRenderCursor == chat.messages.size() - 1);
+    constexpr int kFirstBatchSize = 3;
+    constexpr int kLaterBatchSize = 8;
+    constexpr int kFirstChunkBudgetMs = 6;
+    constexpr int kLaterChunkBudgetMs = 12;
+    const int maxCards = firstChunk ? kFirstBatchSize : kLaterBatchSize;
+    const int maxBudgetMs = firstChunk ? kFirstChunkBudgetMs : kLaterChunkBudgetMs;
+    QElapsedTimer timer;
+    timer.start();
+
     int rendered = 0;
-    while (m_chatRenderCursor >= 0 && rendered < kBatchSize) {
+    while (m_chatRenderCursor >= 0 && rendered < maxCards) {
         const auto &msg = chat.messages[m_chatRenderCursor];
         QString displayText = msg.content;
         if (!msg.imageUrl.isEmpty()) {
@@ -1810,6 +1820,9 @@ void MainWindow::continueChatHistoryRender(int generation)
         }
         --m_chatRenderCursor;
         ++rendered;
+        if (timer.elapsed() >= maxBudgetMs) {
+            break;
+        }
     }
 
     refreshChatViewport();
@@ -1861,7 +1874,7 @@ void MainWindow::scrollToBottom(bool force)
     });
 }
 
-void MainWindow::showWelcomeScreen()
+void MainWindow::showWelcomeScreen(bool refresh)
 {
     if (m_welcomeWidget) {
         if (m_chatLayout->indexOf(m_welcomeWidget) == -1) {
@@ -1870,15 +1883,19 @@ void MainWindow::showWelcomeScreen()
         m_welcomeWidget->setVisible(true);
         m_welcomeWidget->show();
         m_welcomeWidget->raise();
-        refreshChatViewport();
+        if (refresh) {
+            refreshChatViewport();
+        }
     }
 }
 
-void MainWindow::hideWelcomeScreen()
+void MainWindow::hideWelcomeScreen(bool refresh)
 {
     if (m_welcomeWidget) {
         m_welcomeWidget->setVisible(false);
-        refreshChatViewport();
+        if (refresh) {
+            refreshChatViewport();
+        }
     }
 }
 
