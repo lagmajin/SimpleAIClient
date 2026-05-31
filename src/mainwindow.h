@@ -228,11 +228,12 @@ private:
     void showWelcomeScreen(bool refresh = true);
     void hideWelcomeScreen(bool refresh = true);
     void showThinkingIndicator();
-    void hideThinkingIndicator();
+    void hideThinkingIndicator(bool refresh = true);
     void filterChats(const QString &query);
     void continueChatListRender(int generation);
     void saveCurrentChatScrollPosition();
     void restoreCurrentChatScrollPosition();
+    void flushStreamingChunks();
     void saveDraft();
     void loadDraft();
     void clearDraft();
@@ -324,6 +325,8 @@ private:
     QLabel *m_statusSpeed;
     qint64 m_streamStartTime;
     int m_streamTokenCount;
+    QTimer *m_streamRenderTimer;
+    QString m_pendingStreamChunk;
 };
 
 #endif // MAINWINDOW_H

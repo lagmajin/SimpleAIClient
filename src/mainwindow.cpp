@@ -903,6 +903,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_statusSpeed(nullptr)
     , m_streamStartTime(0)
     , m_streamTokenCount(0)
+    , m_streamRenderTimer(new QTimer(this))
 {
     setWindowTitle("SimpleAIClient");
     resize(1200, 800);
@@ -931,6 +932,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_newChatButton, &QPushButton::clicked, this, &MainWindow::onNewChat);
     connect(m_profileCombo, QOverload<const QString &>::of(&QComboBox::currentTextChanged), this, &MainWindow::onProfileChanged);
     connect(m_inputField, &QTextEdit::textChanged, this, &MainWindow::updateCharCounter);
+    m_streamRenderTimer->setInterval(33);
+    m_streamRenderTimer->setSingleShot(false);
+    connect(m_streamRenderTimer, &QTimer::timeout, this, &MainWindow::flushStreamingChunks);
 
     new QShortcut(QKeySequence("Ctrl+F"), this, [this]() { showSearchBar(); });
     new QShortcut(QKeySequence("Ctrl+="), this, [this]() { adjustFontSize(1); });
@@ -1910,6 +1914,39 @@ void MainWindow::restoreCurrentChatScrollPosition()
     });
 }
 
+void MainWindow::flushStreamingChunks()
+{
+    if (!m_streamingCard || m_pendingStreamChunk.isEmpty()) {
+        if (m_streamRenderTimer->isActive() && m_pendingStreamChunk.isEmpty()) {
+            m_streamRenderTimer->stop();
+        }
+        return;
+    }
+
+    QString chunk = m_pendingStreamChunk;
+    m_pendingStreamChunk.clear();
+
+    if (m_streamingCard->content().isEmpty()) {
+        chunk = chunk.trimmed();
+    }
+
+    if (chunk.isEmpty()) {
+        if (m_streamRenderTimer->isActive()) {
+            m_streamRenderTimer->stop();
+        }
+        return;
+    }
+
+    m_streamingCard->appendContent(chunk);
+    m_streamTokenCount += qMax(1, chunk.count(' ') + chunk.count('\n'));
+    updateStreamingSpeed(chunk);
+    scrollToBottom(false);
+
+    if (m_streamRenderTimer->isActive() && m_pendingStreamChunk.isEmpty()) {
+        m_streamRenderTimer->stop();
+    }
+}
+
 bool MainWindow::isNearBottom(int tolerance) const
 {
     if (!m_scrollArea) {
@@ -2021,7 +2058,7 @@ void MainWindow::showThinkingIndicator()
     scrollToBottom();
 }
 
-void MainWindow::hideThinkingIndicator()
+void MainWindow::hideThinkingIndicator(bool refresh)
 {
     if (!m_thinkingIndicator) return;
 
@@ -2031,7 +2068,9 @@ void MainWindow::hideThinkingIndicator()
     delete m_thinkingRowWidget;
     m_thinkingRowWidget = nullptr;
     m_thinkingIndicator = nullptr;
-    refreshChatViewport();
+    if (refresh) {
+        refreshChatViewport();
+    }
 }
 
 void MainWindow::applyModelFilter()
@@ -2183,24 +2222,19 @@ void MainWindow::onResponseReceived(const QString &response, int promptTokens, i
 void MainWindow::onResponseChunk(const QString &chunk)
 {
     if (m_thinkingIndicator) {
-        hideThinkingIndicator();
+        hideThinkingIndicator(false);
         removeTrailingSpacer();
         m_streamingCard = new ChatMessageCard("assistant", "", m_chatContainer);
         m_streamingCard->setStreaming(true);
         m_chatLayout->addWidget(m_streamingCard);
         appendBottomSpacer();
+        refreshChatViewport();
     }
 
-    if (m_streamingCard) {
-        QString trimmed = chunk;
-        if (m_streamingCard->content().isEmpty()) {
-            trimmed = trimmed.trimmed();
-        }
-        if (!trimmed.isEmpty()) {
-            m_streamingCard->appendContent(trimmed);
-            m_streamTokenCount++;
-            updateStreamingSpeed(trimmed);
-            scrollToBottom(false);
+    if (m_streamingCard && !chunk.isEmpty()) {
+        m_pendingStreamChunk += chunk;
+        if (!m_streamRenderTimer->isActive()) {
+            m_streamRenderTimer->start();
         }
     }
     if (m_statusConnection) {
@@ -2211,6 +2245,8 @@ void MainWindow::onResponseChunk(const QString &chunk)
 void MainWindow::onResponseFinished(int responseTimeMs)
 {
     hideThinkingIndicator();
+    flushStreamingChunks();
+    m_streamRenderTimer->stop();
 
     if (m_streamingCard) {
         m_streamingCard->setStreaming(false);
@@ -2240,6 +2276,7 @@ void MainWindow::onResponseFinished(int responseTimeMs)
 
     if (m_statusSpeed) m_statusSpeed->clear();
     m_streamTokenCount = 0;
+    m_pendingStreamChunk.clear();
 
     updateChatDuration();
     playNotificationSound();
