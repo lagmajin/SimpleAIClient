@@ -166,6 +166,7 @@ public:
 
 private slots:
     void onSendMessage();
+    void onRequestCancelled();
     void onResponseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs);
     void onResponseChunk(const QString &chunk);
     void onResponseFinished(int responseTimeMs);
@@ -257,6 +258,7 @@ private:
     void updateChatDuration();
     void showShortcutsDialog();
     void updateStreamingSpeed(const QString &chunk);
+    void setRequestInFlight(bool inFlight);
 
     QWidget *m_sidebar;
     QLabel *m_appTitle;
@@ -327,6 +329,7 @@ private:
     int m_streamTokenCount;
     QTimer *m_streamRenderTimer;
     QString m_pendingStreamChunk;
+    bool m_requestInFlight;
 };
 
 #endif // MAINWINDOW_H

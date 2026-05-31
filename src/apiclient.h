@@ -5,6 +5,8 @@
 #include <QString>
 #include <QList>
 #include <QThread>
+#include <memory>
+#include <atomic>
 #include <httplib.h>
 
 struct ChatMessage {
@@ -15,6 +17,8 @@ struct ChatMessage {
     int totalTokens;
     QString imageUrl;
 };
+
+class ChatRequestWorker;
 
 class ApiClient : public QObject
 {
@@ -30,12 +34,14 @@ public:
     void setMaxTokens(int maxTokens);
     void setWebSearch(bool enabled);
     void sendMessage(const QList<ChatMessage> &messages);
+    void cancelCurrentRequest();
     void fetchModels();
 
 signals:
     void responseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs);
     void responseChunk(const QString &chunk);
     void responseFinished(int responseTimeMs);
+    void requestCancelled();
     void errorOccurred(const QString &error);
     void modelsFetched(const QStringList &models);
 
@@ -47,6 +53,8 @@ private:
     double m_temperature;
     int m_maxTokens;
     bool m_webSearch;
+    QThread *m_activeRequestThread;
+    ChatRequestWorker *m_activeRequestWorker;
 };
 
 class ChatRequestWorker : public QObject
@@ -57,11 +65,13 @@ public:
 
 public slots:
     void execute();
+    void cancel();
 
 signals:
     void responseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs);
     void responseChunk(const QString &chunk);
     void responseFinished(int responseTimeMs);
+    void requestCancelled();
     void errorOccurred(const QString &error);
 
 private:
@@ -76,6 +86,8 @@ private:
     double m_temperature;
     int m_maxTokens;
     bool m_webSearch;
+    std::atomic_bool m_cancelRequested;
+    std::shared_ptr<httplib::Client> m_client;
 };
 
 class ModelsRequestWorker : public QObject

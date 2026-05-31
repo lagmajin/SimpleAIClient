@@ -904,6 +904,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_streamStartTime(0)
     , m_streamTokenCount(0)
     , m_streamRenderTimer(new QTimer(this))
+    , m_requestInFlight(false)
 {
     setWindowTitle("SimpleAIClient");
     resize(1200, 800);
@@ -926,6 +927,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_apiClient, &ApiClient::responseReceived, this, &MainWindow::onResponseReceived);
     connect(m_apiClient, &ApiClient::responseChunk, this, &MainWindow::onResponseChunk);
     connect(m_apiClient, &ApiClient::responseFinished, this, &MainWindow::onResponseFinished);
+    connect(m_apiClient, &ApiClient::requestCancelled, this, &MainWindow::onRequestCancelled);
     connect(m_apiClient, &ApiClient::errorOccurred, this, &MainWindow::onApiErrorWithRetry);
     connect(m_apiClient, &ApiClient::modelsFetched, this, &MainWindow::onModelsFetched);
     connect(m_modelCombo, QOverload<const QString &>::of(&QComboBox::currentTextChanged), this, &MainWindow::onModelChanged);
@@ -2121,6 +2123,11 @@ void MainWindow::onAttachImage()
 
 void MainWindow::onSendMessage()
 {
+    if (m_requestInFlight) {
+        m_apiClient->cancelCurrentRequest();
+        return;
+    }
+
     QString text = m_inputField->toPlainText().trimmed();
     if (text.isEmpty() && m_currentChatImage.isEmpty()) return;
 
@@ -2159,8 +2166,8 @@ void MainWindow::onSendMessage()
         updateHeaderState();
     }
 
-    m_sendButton->setEnabled(false);
     m_inputField->setEnabled(false);
+    setRequestInFlight(true);
 
     m_retryCount = 0;
     m_pendingMessages = m_chatSessions[m_currentChatIndex].messages;
@@ -2208,9 +2215,9 @@ void MainWindow::onResponseReceived(const QString &response, int promptTokens, i
         m_statusResponseTime->setText(QString("%.1fs").arg(responseTimeMs / 1000.0));
     }
 
-    m_sendButton->setEnabled(true);
     m_inputField->setEnabled(true);
     m_inputField->setFocus();
+    setRequestInFlight(false);
 
     scrollToBottom();
 
@@ -2267,9 +2274,9 @@ void MainWindow::onResponseFinished(int responseTimeMs)
         m_statusResponseTime->setText(QString("%.1fs").arg(responseTimeMs / 1000.0));
     }
 
-    m_sendButton->setEnabled(true);
     m_inputField->setEnabled(true);
     m_inputField->setFocus();
+    setRequestInFlight(false);
     m_streamingCard = nullptr;
     m_retryCount = 0;
     m_pendingMessages.clear();
@@ -2303,9 +2310,46 @@ void MainWindow::onErrorOccurred(const QString &error)
         m_statusConnection->setText("Error");
     }
 
-    m_sendButton->setEnabled(true);
     m_inputField->setEnabled(true);
     m_inputField->setFocus();
+    setRequestInFlight(false);
+}
+
+void MainWindow::onRequestCancelled()
+{
+    hideThinkingIndicator();
+    flushStreamingChunks();
+    m_streamRenderTimer->stop();
+
+    if (m_streamingCard) {
+        m_streamingCard->setStreaming(false);
+        m_streamingCard->showCopyButton(true);
+
+        const QString partialContent = m_streamingCard->content();
+        if (!partialContent.trimmed().isEmpty() && m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
+            ChatMessage assistantMsg{"assistant", partialContent, 0, 0, 0};
+            m_chatSessions[m_currentChatIndex].messages.append(assistantMsg);
+            saveChatSessions();
+            updateContextUsage();
+        } else {
+            m_chatLayout->removeWidget(m_streamingCard);
+            delete m_streamingCard;
+        }
+    }
+
+    m_streamingCard = nullptr;
+    m_pendingStreamChunk.clear();
+    m_retryCount = 0;
+    m_pendingMessages.clear();
+    m_streamTokenCount = 0;
+    if (m_statusSpeed) m_statusSpeed->clear();
+    if (m_statusConnection) {
+        m_statusConnection->setText("Stopped");
+    }
+
+    m_inputField->setEnabled(true);
+    m_inputField->setFocus();
+    setRequestInFlight(false);
 }
 
 void MainWindow::onSettings()
@@ -3263,6 +3307,14 @@ void MainWindow::updateStreamingSpeed(const QString &chunk)
         double speed = (double)m_streamTokenCount / (elapsed / 1000.0);
         m_statusSpeed->setText(QString("%1 tok/s").arg(speed, 0, 'f', 1));
     }
+}
+
+void MainWindow::setRequestInFlight(bool inFlight)
+{
+    m_requestInFlight = inFlight;
+    m_sendButton->setEnabled(true);
+    m_sendButton->setIcon(style()->standardIcon(inFlight ? QStyle::SP_BrowserStop : QStyle::SP_ArrowRight));
+    m_sendButton->setToolTip(inFlight ? "Stop generation" : "Send message");
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)

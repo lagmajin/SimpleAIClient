@@ -13,6 +13,8 @@ ApiClient::ApiClient(QObject *parent)
     , m_temperature(0.7)
     , m_maxTokens(0)
     , m_webSearch(false)
+    , m_activeRequestThread(nullptr)
+    , m_activeRequestWorker(nullptr)
 {
 }
 
@@ -53,22 +55,43 @@ void ApiClient::setWebSearch(bool enabled)
 
 void ApiClient::sendMessage(const QList<ChatMessage> &messages)
 {
+    cancelCurrentRequest();
+
     QThread *thread = new QThread();
     ChatRequestWorker *worker = new ChatRequestWorker(m_apiKey, m_model, messages, m_streaming, m_systemPrompt, m_temperature, m_maxTokens, m_webSearch);
     worker->moveToThread(thread);
+    m_activeRequestThread = thread;
+    m_activeRequestWorker = worker;
 
     connect(thread, &QThread::started, worker, &ChatRequestWorker::execute);
     connect(worker, &ChatRequestWorker::responseReceived, this, &ApiClient::responseReceived);
     connect(worker, &ChatRequestWorker::responseChunk, this, &ApiClient::responseChunk);
     connect(worker, &ChatRequestWorker::responseFinished, this, &ApiClient::responseFinished);
+    connect(worker, &ChatRequestWorker::requestCancelled, this, &ApiClient::requestCancelled);
     connect(worker, &ChatRequestWorker::errorOccurred, this, &ApiClient::errorOccurred);
     connect(worker, &ChatRequestWorker::responseReceived, thread, &QThread::quit);
     connect(worker, &ChatRequestWorker::responseFinished, thread, &QThread::quit);
+    connect(worker, &ChatRequestWorker::requestCancelled, thread, &QThread::quit);
     connect(worker, &ChatRequestWorker::errorOccurred, thread, &QThread::quit);
+    connect(thread, &QThread::finished, this, [this, thread, worker]() {
+        if (m_activeRequestThread == thread) {
+            m_activeRequestThread = nullptr;
+        }
+        if (m_activeRequestWorker == worker) {
+            m_activeRequestWorker = nullptr;
+        }
+    });
     connect(thread, &QThread::finished, worker, &QObject::deleteLater);
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
 
     thread->start();
+}
+
+void ApiClient::cancelCurrentRequest()
+{
+    if (m_activeRequestWorker) {
+        QMetaObject::invokeMethod(m_activeRequestWorker, "cancel", Qt::QueuedConnection);
+    }
 }
 
 void ApiClient::fetchModels()
@@ -89,8 +112,16 @@ void ApiClient::fetchModels()
 }
 
 ChatRequestWorker::ChatRequestWorker(const QString &apiKey, const QString &model, const QList<ChatMessage> &messages, bool streaming, const QString &systemPrompt, double temperature, int maxTokens, bool webSearch)
-    : m_apiKey(apiKey), m_model(model), m_messages(messages), m_streaming(streaming), m_startTime(0), m_systemPrompt(systemPrompt), m_temperature(temperature), m_maxTokens(maxTokens), m_webSearch(webSearch)
+    : m_apiKey(apiKey), m_model(model), m_messages(messages), m_streaming(streaming), m_startTime(0), m_systemPrompt(systemPrompt), m_temperature(temperature), m_maxTokens(maxTokens), m_webSearch(webSearch), m_cancelRequested(false)
 {
+}
+
+void ChatRequestWorker::cancel()
+{
+    m_cancelRequested.store(true);
+    if (m_client) {
+        m_client->stop();
+    }
 }
 
 QString ChatRequestWorker::parseSSELine(const QString &line)
@@ -128,8 +159,9 @@ void ChatRequestWorker::execute()
 {
     m_startTime = QDateTime::currentMSecsSinceEpoch();
 
-    httplib::Client cli("https://api.venice.ai");
-    cli.set_follow_location(true);
+    m_cancelRequested.store(false);
+    m_client = std::make_shared<httplib::Client>("https://api.venice.ai");
+    m_client->set_follow_location(true);
 
     QJsonObject payload;
     payload["model"] = m_model;
@@ -194,8 +226,11 @@ void ChatRequestWorker::execute()
 
     if (m_streaming) {
         QString fullResponse;
-        httplib::Result res = cli.Post("/api/v1/chat/completions", headers, body, "application/json",
+        httplib::Result res = m_client->Post("/api/v1/chat/completions", headers, body, "application/json",
             [&](const char *data, size_t data_length) {
+                if (m_cancelRequested.load()) {
+                    return false;
+                }
                 QString chunk = QString::fromUtf8(data, static_cast<int>(data_length));
                 QStringList lines = chunk.split("\n");
                 for (const auto &line : lines) {
@@ -208,10 +243,17 @@ void ChatRequestWorker::execute()
                 return true;
             });
 
+        if (m_cancelRequested.load()) {
+            emit requestCancelled();
+            m_client.reset();
+            return;
+        }
+
         if (!res) {
             QString errMsg = QString("Request failed: error code %1").arg(static_cast<int>(res.error()));
             qDebug() << "ChatRequestWorker Error:" << errMsg;
             emit errorOccurred(errMsg);
+            m_client.reset();
             return;
         }
 
@@ -237,17 +279,25 @@ void ChatRequestWorker::execute()
                 errorMsg += ": " + QString::fromStdString(res->body);
             }
             emit errorOccurred(errorMsg);
+            m_client.reset();
             return;
         }
 
         emit responseFinished(static_cast<int>(QDateTime::currentMSecsSinceEpoch() - m_startTime));
     } else {
-        auto res = cli.Post("/api/v1/chat/completions", headers, body, "application/json");
+        auto res = m_client->Post("/api/v1/chat/completions", headers, body, "application/json");
+
+        if (m_cancelRequested.load()) {
+            emit requestCancelled();
+            m_client.reset();
+            return;
+        }
 
         if (!res) {
             QString errMsg = QString("Request failed: error code %1").arg(static_cast<int>(res.error()));
             qDebug() << "ChatRequestWorker Error:" << errMsg;
             emit errorOccurred(errMsg);
+            m_client.reset();
             return;
         }
 
@@ -273,6 +323,7 @@ void ChatRequestWorker::execute()
                 errorMsg += ": " + QString::fromStdString(res->body);
             }
             emit errorOccurred(errorMsg);
+            m_client.reset();
             return;
         }
 
@@ -303,6 +354,8 @@ void ChatRequestWorker::execute()
             emit errorOccurred("Unexpected response format");
         }
     }
+
+    m_client.reset();
 }
 
 ModelsRequestWorker::ModelsRequestWorker(const QString &apiKey)
