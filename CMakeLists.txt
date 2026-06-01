@@ -57,6 +57,32 @@ if(NOT httplib_DIR)
     endforeach()
 endif()
 
+if(NOT OpenSSL_DIR)
+    set(_openssl_hint_paths)
+
+    if(DEFINED ENV{OpenSSL_DIR} AND EXISTS "$ENV{OpenSSL_DIR}/OpenSSLConfig.cmake")
+        list(APPEND _openssl_hint_paths "$ENV{OpenSSL_DIR}")
+    endif()
+
+    if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+        list(APPEND _openssl_hint_paths "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/openssl")
+    endif()
+
+    if(DEFINED CMAKE_TOOLCHAIN_FILE)
+        get_filename_component(_vcpkg_buildsystems_dir "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)
+        get_filename_component(_vcpkg_scripts_dir "${_vcpkg_buildsystems_dir}" DIRECTORY)
+        get_filename_component(_vcpkg_root_dir "${_vcpkg_scripts_dir}" DIRECTORY)
+        list(APPEND _openssl_hint_paths "${_vcpkg_root_dir}/installed/x64-windows/share/openssl")
+    endif()
+
+    foreach(_openssl_hint IN LISTS _openssl_hint_paths)
+        if(EXISTS "${_openssl_hint}/OpenSSLConfig.cmake")
+            set(OpenSSL_DIR "${_openssl_hint}" CACHE PATH "Path to OpenSSLConfig.cmake" FORCE)
+            break()
+        endif()
+    endforeach()
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Multimedia)
 find_package(httplib CONFIG REQUIRED)
 
