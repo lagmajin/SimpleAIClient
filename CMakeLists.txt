@@ -31,6 +31,32 @@ if(NOT Qt6_DIR)
     endforeach()
 endif()
 
+if(NOT httplib_DIR)
+    set(_httplib_hint_paths)
+
+    if(DEFINED ENV{httplib_DIR} AND EXISTS "$ENV{httplib_DIR}/httplibConfig.cmake")
+        list(APPEND _httplib_hint_paths "$ENV{httplib_DIR}")
+    endif()
+
+    if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+        list(APPEND _httplib_hint_paths "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/httplib")
+    endif()
+
+    if(DEFINED CMAKE_TOOLCHAIN_FILE)
+        get_filename_component(_vcpkg_buildsystems_dir "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)
+        get_filename_component(_vcpkg_scripts_dir "${_vcpkg_buildsystems_dir}" DIRECTORY)
+        get_filename_component(_vcpkg_root_dir "${_vcpkg_scripts_dir}" DIRECTORY)
+        list(APPEND _httplib_hint_paths "${_vcpkg_root_dir}/installed/x64-windows/share/httplib")
+    endif()
+
+    foreach(_httplib_hint IN LISTS _httplib_hint_paths)
+        if(EXISTS "${_httplib_hint}/httplibConfig.cmake")
+            set(httplib_DIR "${_httplib_hint}" CACHE PATH "Path to httplibConfig.cmake" FORCE)
+            break()
+        endif()
+    endforeach()
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Multimedia)
 find_package(httplib CONFIG REQUIRED)
 
