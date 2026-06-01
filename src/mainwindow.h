@@ -32,8 +32,10 @@ struct ChatSession {
     QString id;
     QString title;
     QList<ChatMessage> messages;
+    int messageCount = 0;
     bool pinned;
     int scrollPosition = 0;
+    bool messagesLoaded = false;
 };
 
 struct ApiProfile {
@@ -211,6 +213,9 @@ private:
     void updateChatList();
     void saveChatSessions();
     void loadChatSessions();
+    void saveChatMessages(int index);
+    void loadChatMessages(int index);
+    void unloadChatMessages(int index);
     QString generateChatTitle(const QString &firstMessage);
     void refreshChatViewport();
     void removeTrailingSpacer();

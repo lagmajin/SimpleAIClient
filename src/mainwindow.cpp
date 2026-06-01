@@ -1401,6 +1401,7 @@ void MainWindow::setupMenu()
     connect(clearAction, &QAction::triggered, [this]() {
         if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
             m_chatSessions[m_currentChatIndex].messages.clear();
+            m_chatSessions[m_currentChatIndex].messageCount = 0;
             clearChatDisplay();
             saveChatSessions();
         }
@@ -1473,7 +1474,9 @@ void MainWindow::createNewChat()
     ChatSession newChat;
     newChat.id = QString::number(QDateTime::currentMSecsSinceEpoch());
     newChat.title = "New Chat";
+    newChat.messageCount = 0;
     newChat.pinned = false;
+    newChat.messagesLoaded = true;
     m_chatSessions.prepend(newChat);
     m_currentChatIndex = 0;
     clearChatDisplay();
@@ -1504,8 +1507,13 @@ void MainWindow::switchToChat(int index)
 
     saveDraft();
     saveCurrentChatScrollPosition();
+    if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size() && m_currentChatIndex != index) {
+        saveChatMessages(m_currentChatIndex);
+        unloadChatMessages(m_currentChatIndex);
+    }
 
     m_currentChatIndex = index;
+    loadChatMessages(index);
     rebuildCurrentChatView();
 
     loadDraft();
@@ -1581,10 +1589,10 @@ void MainWindow::continueChatListRender(int generation)
         int idx = m_chatListRenderIndices[m_chatListRenderCursor++];
         const ChatSession &chat = m_chatSessions[idx];
         QStringList metaParts;
-        if (chat.messages.isEmpty()) {
+        if (chat.messageCount == 0) {
             metaParts << "Empty";
         } else {
-            metaParts << QString("%1 msg").arg(chat.messages.size());
+            metaParts << QString("%1 msg").arg(chat.messageCount);
         }
         if (chat.pinned) {
             metaParts << "Pinned";
@@ -1632,25 +1640,19 @@ void MainWindow::continueChatListRender(int generation)
 void MainWindow::saveChatSessions()
 {
     QJsonArray sessionsArray;
-    for (const auto &chat : m_chatSessions) {
+    for (int i = 0; i < m_chatSessions.size(); ++i) {
+        auto &chat = m_chatSessions[i];
+        if (chat.messagesLoaded) {
+            chat.messageCount = chat.messages.size();
+            saveChatMessages(i);
+        }
+
         QJsonObject sessionObj;
         sessionObj["id"] = chat.id;
         sessionObj["title"] = chat.title;
         sessionObj["pinned"] = chat.pinned;
         sessionObj["scrollPosition"] = chat.scrollPosition;
-
-        QJsonArray messagesArray;
-        for (const auto &msg : chat.messages) {
-            QJsonObject msgObj;
-            msgObj["role"] = msg.role;
-            msgObj["content"] = msg.content;
-            msgObj["promptTokens"] = msg.promptTokens;
-            msgObj["completionTokens"] = msg.completionTokens;
-            msgObj["totalTokens"] = msg.totalTokens;
-            msgObj["imageUrl"] = msg.imageUrl;
-            messagesArray.append(msgObj);
-        }
-        sessionObj["messages"] = messagesArray;
+        sessionObj["messageCount"] = chat.messageCount;
         sessionsArray.append(sessionObj);
     }
 
@@ -1667,6 +1669,7 @@ void MainWindow::loadChatSessions()
     if (!doc.isArray()) return;
 
     m_chatSessions.clear();
+    bool needsMigration = false;
     for (const auto &val : doc.array()) {
         QJsonObject sessionObj = val.toObject();
         ChatSession chat;
@@ -1674,11 +1677,18 @@ void MainWindow::loadChatSessions()
         chat.title = sessionObj["title"].toString();
         chat.pinned = sessionObj["pinned"].toBool();
         chat.scrollPosition = sessionObj["scrollPosition"].toInt();
+        chat.messageCount = sessionObj["messageCount"].toInt();
+        chat.messagesLoaded = false;
 
         QJsonArray messagesArray = sessionObj["messages"].toArray();
-        for (const auto &msgVal : messagesArray) {
-            QJsonObject msgObj = msgVal.toObject();
-            chat.messages.append({msgObj["role"].toString(), msgObj["content"].toString(), msgObj["promptTokens"].toInt(), msgObj["completionTokens"].toInt(), msgObj["totalTokens"].toInt(), msgObj["imageUrl"].toString()});
+        if (!messagesArray.isEmpty()) {
+            needsMigration = true;
+            for (const auto &msgVal : messagesArray) {
+                QJsonObject msgObj = msgVal.toObject();
+                chat.messages.append({msgObj["role"].toString(), msgObj["content"].toString(), msgObj["promptTokens"].toInt(), msgObj["completionTokens"].toInt(), msgObj["totalTokens"].toInt(), msgObj["imageUrl"].toString()});
+            }
+            chat.messageCount = chat.messages.size();
+            chat.messagesLoaded = true;
         }
         m_chatSessions.append(chat);
     }
@@ -1686,6 +1696,63 @@ void MainWindow::loadChatSessions()
     if (!m_chatSessions.isEmpty()) {
         m_currentChatIndex = 0;
     }
+
+    if (needsMigration) {
+        saveChatSessions();
+    }
+}
+
+void MainWindow::saveChatMessages(int index)
+{
+    if (index < 0 || index >= m_chatSessions.size()) return;
+
+    const auto &chat = m_chatSessions[index];
+    QJsonArray messagesArray;
+    for (const auto &msg : chat.messages) {
+        QJsonObject msgObj;
+        msgObj["role"] = msg.role;
+        msgObj["content"] = msg.content;
+        msgObj["promptTokens"] = msg.promptTokens;
+        msgObj["completionTokens"] = msg.completionTokens;
+        msgObj["totalTokens"] = msg.totalTokens;
+        msgObj["imageUrl"] = msg.imageUrl;
+        messagesArray.append(msgObj);
+    }
+
+    m_settings.setValue(QString("chatMessages/%1").arg(chat.id), QString::fromUtf8(QJsonDocument(messagesArray).toJson(QJsonDocument::Compact)));
+}
+
+void MainWindow::loadChatMessages(int index)
+{
+    if (index < 0 || index >= m_chatSessions.size()) return;
+
+    auto &chat = m_chatSessions[index];
+    if (chat.messagesLoaded) return;
+
+    chat.messages.clear();
+    QString data = m_settings.value(QString("chatMessages/%1").arg(chat.id)).toString();
+    if (!data.isEmpty()) {
+        QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8());
+        if (doc.isArray()) {
+            for (const auto &msgVal : doc.array()) {
+                QJsonObject msgObj = msgVal.toObject();
+                chat.messages.append({msgObj["role"].toString(), msgObj["content"].toString(), msgObj["promptTokens"].toInt(), msgObj["completionTokens"].toInt(), msgObj["totalTokens"].toInt(), msgObj["imageUrl"].toString()});
+            }
+        }
+    }
+    chat.messageCount = chat.messages.size();
+    chat.messagesLoaded = true;
+}
+
+void MainWindow::unloadChatMessages(int index)
+{
+    if (index < 0 || index >= m_chatSessions.size()) return;
+    auto &chat = m_chatSessions[index];
+    if (!chat.messagesLoaded) return;
+
+    chat.messageCount = chat.messages.size();
+    chat.messages.clear();
+    chat.messagesLoaded = false;
 }
 
 QString MainWindow::generateChatTitle(const QString &firstMessage)
@@ -2155,6 +2222,7 @@ void MainWindow::onSendMessage()
 
     ChatMessage userMsg{"user", text, 0, 0, 0, m_currentChatImage};
     m_chatSessions[m_currentChatIndex].messages.append(userMsg);
+    m_chatSessions[m_currentChatIndex].messageCount = m_chatSessions[m_currentChatIndex].messages.size();
 
     m_currentChatImage.clear();
     m_imagePreview->setVisible(false);
@@ -2204,6 +2272,7 @@ void MainWindow::onResponseReceived(const QString &response, int promptTokens, i
 
     ChatMessage assistantMsg{"assistant", response, promptTokens, completionTokens, totalTokens};
     m_chatSessions[m_currentChatIndex].messages.append(assistantMsg);
+    m_chatSessions[m_currentChatIndex].messageCount = m_chatSessions[m_currentChatIndex].messages.size();
 
     if (m_statusConnection) {
         m_statusConnection->setText("Ready");
@@ -2262,6 +2331,7 @@ void MainWindow::onResponseFinished(int responseTimeMs)
         QString fullContent = m_streamingCard->content();
         ChatMessage assistantMsg{"assistant", fullContent, 0, 0, 0};
         m_chatSessions[m_currentChatIndex].messages.append(assistantMsg);
+        m_chatSessions[m_currentChatIndex].messageCount = m_chatSessions[m_currentChatIndex].messages.size();
         saveChatSessions();
 
         updateContextUsage();
@@ -2329,6 +2399,7 @@ void MainWindow::onRequestCancelled()
         if (!partialContent.trimmed().isEmpty() && m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
             ChatMessage assistantMsg{"assistant", partialContent, 0, 0, 0};
             m_chatSessions[m_currentChatIndex].messages.append(assistantMsg);
+            m_chatSessions[m_currentChatIndex].messageCount = m_chatSessions[m_currentChatIndex].messages.size();
             saveChatSessions();
             updateContextUsage();
         } else {
@@ -2371,6 +2442,8 @@ void MainWindow::onExportChat()
         QMessageBox::information(this, "Export Chat", "No chat to export.");
         return;
     }
+
+    loadChatMessages(m_currentChatIndex);
 
     const auto &chat = m_chatSessions[m_currentChatIndex];
     QString defaultName = chat.title.isEmpty() ? "chat" : chat.title;
@@ -2421,6 +2494,7 @@ void MainWindow::onRegenerateResponse()
 
     if (messages.last().role == "assistant") {
         messages.removeLast();
+        m_chatSessions[m_currentChatIndex].messageCount = messages.size();
     }
 
     if (messages.isEmpty()) return;
@@ -2456,10 +2530,12 @@ void MainWindow::onBranchConversation(int messageIndex)
     newChat.id = QString::number(QDateTime::currentMSecsSinceEpoch());
     newChat.title = sourceChat.title + " (branch)";
     newChat.pinned = false;
+    newChat.messagesLoaded = true;
 
     for (int i = 0; i <= messageIndex; ++i) {
         newChat.messages.append(sourceChat.messages[i]);
     }
+    newChat.messageCount = newChat.messages.size();
 
     m_chatSessions.prepend(newChat);
     m_currentChatIndex = 0;
@@ -2492,6 +2568,7 @@ void MainWindow::onEditMessage(int messageIndex, const QString &newContent)
             messages.removeAt(i);
         }
     }
+    m_chatSessions[m_currentChatIndex].messageCount = messages.size();
 
     clearChatDisplay();
     for (const auto &msg : messages) {
@@ -2759,6 +2836,7 @@ void MainWindow::handleQuickCommand(const QString &command)
     if (command == "/clear") {
         if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
             m_chatSessions[m_currentChatIndex].messages.clear();
+            m_chatSessions[m_currentChatIndex].messageCount = 0;
             clearChatDisplay();
             saveChatSessions();
             showWelcomeScreen();
@@ -2894,7 +2972,7 @@ void MainWindow::updateHeaderState()
     if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
         const ChatSession &chat = m_chatSessions[m_currentChatIndex];
         title = chat.title.isEmpty() ? "New Chat" : chat.title;
-        messageCount = chat.messages.size();
+        messageCount = chat.messageCount;
     }
 
     QString profile = m_profileCombo ? m_profileCombo->currentText() : QString();
