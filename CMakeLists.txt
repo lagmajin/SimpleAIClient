@@ -5,6 +5,32 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
+if(NOT Qt6_DIR)
+    set(_qt6_hint_paths)
+
+    if(DEFINED ENV{Qt6_DIR} AND EXISTS "$ENV{Qt6_DIR}/Qt6Config.cmake")
+        list(APPEND _qt6_hint_paths "$ENV{Qt6_DIR}")
+    endif()
+
+    if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+        list(APPEND _qt6_hint_paths "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/Qt6")
+    endif()
+
+    if(DEFINED CMAKE_TOOLCHAIN_FILE)
+        get_filename_component(_vcpkg_buildsystems_dir "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)
+        get_filename_component(_vcpkg_scripts_dir "${_vcpkg_buildsystems_dir}" DIRECTORY)
+        get_filename_component(_vcpkg_root_dir "${_vcpkg_scripts_dir}" DIRECTORY)
+        list(APPEND _qt6_hint_paths "${_vcpkg_root_dir}/installed/x64-windows/share/Qt6")
+    endif()
+
+    foreach(_qt6_hint IN LISTS _qt6_hint_paths)
+        if(EXISTS "${_qt6_hint}/Qt6Config.cmake")
+            set(Qt6_DIR "${_qt6_hint}" CACHE PATH "Path to Qt6Config.cmake" FORCE)
+            break()
+        endif()
+    endforeach()
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Multimedia)
 find_package(httplib CONFIG REQUIRED)
 
