@@ -84,6 +84,34 @@ if(NOT OPENSSL_ROOT_DIR)
     endforeach()
 endif()
 
+if(NOT ZLIB_ROOT)
+    set(_zlib_root_hint_paths)
+
+    if(DEFINED ENV{ZLIB_ROOT} AND EXISTS "$ENV{ZLIB_ROOT}/include/zlib.h")
+        list(APPEND _zlib_root_hint_paths "$ENV{ZLIB_ROOT}")
+    endif()
+
+    if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+        list(APPEND _zlib_root_hint_paths "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+    endif()
+
+    if(DEFINED CMAKE_TOOLCHAIN_FILE)
+        get_filename_component(_vcpkg_buildsystems_dir "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)
+        get_filename_component(_vcpkg_scripts_dir "${_vcpkg_buildsystems_dir}" DIRECTORY)
+        get_filename_component(_vcpkg_root_dir "${_vcpkg_scripts_dir}" DIRECTORY)
+        list(APPEND _zlib_root_hint_paths "${_vcpkg_root_dir}/installed/x64-windows")
+    endif()
+
+    foreach(_zlib_root_hint IN LISTS _zlib_root_hint_paths)
+        if(EXISTS "${_zlib_root_hint}/include/zlib.h" AND EXISTS "${_zlib_root_hint}/lib/zlib.lib")
+            set(ZLIB_ROOT "${_zlib_root_hint}" CACHE PATH "Path to the ZLIB root directory" FORCE)
+            set(ZLIB_INCLUDE_DIR "${_zlib_root_hint}/include" CACHE PATH "Path to ZLIB headers" FORCE)
+            set(ZLIB_LIBRARY "${_zlib_root_hint}/lib/zlib.lib" CACHE FILEPATH "Path to ZLIB library" FORCE)
+            break()
+        endif()
+    endforeach()
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Multimedia)
 find_package(httplib CONFIG REQUIRED)
 
