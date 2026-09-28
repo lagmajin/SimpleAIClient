@@ -25,7 +25,10 @@
 #include <QPixmap>
 #include <QEnterEvent>
 #include <QDateTime>
+#include <QCloseEvent>
 #include <QSoundEffect>
+#include "credentialstore.h"
+#include <QJsonObject>
 #include "apiclient.h"
 
 struct ChatSession {
@@ -98,6 +101,7 @@ public:
     void highlightText(const QString &text);
     void clearHighlight();
     void setTimestamp(const QDateTime &timestamp);
+    void setContentFontSize(int pixels);
 
 protected:
     void enterEvent(QEnterEvent *event) override;
@@ -105,13 +109,12 @@ protected:
 
 signals:
     void copyRequested(const QString &text);
-    void regenerateRequested();
+    void regenerateRequested(int messageIndex);
     void branchRequested(int messageIndex);
     void editRequested(int messageIndex, const QString &newContent);
 
 private:
     void renderMarkdown(const QString &text);
-    QString escapeHtml(const QString &text);
     QString renderInlineMarkdown(const QString &text);
     void addCodeBlock(const QString &code, const QString &language);
     void addTextBlock(const QString &text);
@@ -119,6 +122,7 @@ private:
 
     QString m_role;
     QString m_fullContent;
+    QString m_highlightText;
     QVBoxLayout *m_outerLayout;
     AvatarLabel *m_avatar;
     QFrame *m_card;
@@ -135,6 +139,7 @@ private:
     bool m_isStreaming;
     QDateTime m_timestamp;
     QLabel *m_timestampLabel;
+    int m_contentFontSize = 15;
 };
 
 class ChatSearchBar : public QFrame {
@@ -177,14 +182,15 @@ private slots:
     void onExportChat();
     void onAdvancedSettings();
     void onToggleTheme();
-    void onRegenerateResponse();
+    void onRegenerateResponse(int messageIndex);
     void onBranchConversation(int messageIndex);
     void onEditMessage(int messageIndex, const QString &newContent);
     void onAttachImage();
+    void onRecoverChats();
+    void onExportBackupSnapshot();
     void onModelsFetched(const QStringList &models);
     void onModelChanged(const QString &model);
     void onNewChat();
-    void onChatSelected(QListWidgetItem *current, QListWidgetItem *previous);
     void onDeleteChat();
     void onProfileChanged();
     void onManageProfiles();
@@ -196,6 +202,7 @@ private slots:
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
+    void closeEvent(QCloseEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;
     void dropEvent(QDropEvent *event) override;
@@ -208,8 +215,10 @@ private:
     bool checkApiKey();
     void fetchModels();
     void restoreModelSelection();
+    int chatIndexForId(const QString &id) const;
+    void restoreLastChatSelection();
     void createNewChat();
-    void switchToChat(int index);
+    void switchToChat(int index, bool force = false);
     void updateChatList();
     void saveChatSessions();
     void loadChatSessions();
@@ -245,7 +254,9 @@ private:
     void clearDraft();
     void applyTheme();
     void updateCharCounter();
-    void handleQuickCommand(const QString &command);
+    // Returns false when the input is not a recognised command and the text
+    // was put back into the input field.
+    bool handleQuickCommand(const QString &command);
     void loadProfiles();
     void saveProfiles();
     void applyProfile(const ApiProfile &profile);
@@ -253,7 +264,6 @@ private:
     void updateContextUsage();
     void showSearchBar();
     void hideSearchBar();
-    void highlightInChat(const QString &text);
     void clearHighlights();
     void adjustFontSize(int delta);
     void resetFontSize();
@@ -264,6 +274,15 @@ private:
     void showShortcutsDialog();
     void updateStreamingSpeed(const QString &chunk);
     void setRequestInFlight(bool inFlight);
+    void beginRequest(int chatIndex);
+    void rebuildCardsForMessages(const QList<ChatMessage> &messages);
+    bool persistAssistantMessage(int chatIndex, const QString &content, int promptTokens, int completionTokens, int totalTokens);
+    QString chatBackupFilePath() const;
+    QJsonObject buildChatBackupSnapshot() const;
+    bool loadChatBackupSnapshot(QJsonObject *snapshot) const;
+    bool saveChatBackup();
+    bool restoreChatFromBackup(const QString &chatId);
+    QList<int> recoverableChatIndices() const;
 
     QWidget *m_sidebar;
     QLabel *m_appTitle;
@@ -313,8 +332,7 @@ private:
     QList<ApiProfile> m_profiles;
     QString m_currentProfileName;
     bool m_autoScroll;
-    bool m_scrollToBottomQueued;
-    bool m_scrollToBottomForcePending;
+    bool m_stickToBottom;
     int m_chatRenderGeneration;
     int m_chatRenderCursor;
     int m_chatListRenderGeneration;
@@ -324,6 +342,7 @@ private:
     int m_retryCount;
     int m_maxRetries;
     QTimer *m_retryTimer;
+    QTimer *m_backupTimer;
     QList<ChatMessage> m_pendingMessages;
     QSoundEffect *m_notificationSound;
     bool m_soundInitialized;
@@ -333,7 +352,10 @@ private:
     qint64 m_streamStartTime;
     int m_streamTokenCount;
     QTimer *m_streamRenderTimer;
+    QTimer *m_scrollFollowTimer;
     QString m_pendingStreamChunk;
+    QString m_streamedContent;
+    int m_requestChatIndex;
     bool m_requestInFlight;
 };
 

@@ -19,6 +19,7 @@
 #include <QTextEdit>
 #include <QRegularExpression>
 #include <QPainter>
+#include <QPainterPath>
 #include <QGraphicsDropShadowEffect>
 #include <QTimer>
 #include <QStyle>
@@ -26,11 +27,14 @@
 #include <QPen>
 #include <QFileDialog>
 #include <QFile>
+#include <QSaveFile>
 #include <QTextStream>
+#include <QSaveFile>
 #include <QPalette>
 #include <QDialog>
 #include <QFormLayout>
 #include <QElapsedTimer>
+#include <cmath>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QSlider>
@@ -48,7 +52,327 @@
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QAbstractItemView>
+#include <QStandardPaths>
+#include <QDir>
+#include <QFileInfo>
+#include <QMap>
 #include <QtMath>
+
+namespace {
+
+enum class AppIconGlyph {
+    App,
+    File,
+    Export,
+    Settings,
+    Profiles,
+    ClearChat,
+    Theme,
+    Advanced,
+    Quit,
+    NewChat,
+    Send,
+    Stop,
+    Folder,
+    Chat,
+    Trash,
+    Search,
+    ChevronUp,
+    ChevronDown,
+    Close,
+    Copy,
+    Refresh,
+    Branch,
+    Edit,
+    Save,
+    Cancel,
+    Image,
+    Code,
+    Key,
+    Model,
+    Pin,
+    Unpin,
+    Warning,
+    Info,
+    Database,
+    Terminal,
+    Globe
+};
+
+QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QColor("#007acc"))
+{
+    QPixmap pixmap(size, size);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    const qreal scale = size / 24.0;
+    auto sx = [scale](qreal value) { return value * scale; };
+
+    QPen pen(accent, sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    QPen softPen(QColor("#8ab4f8"), sx(1.5), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    painter.setPen(pen);
+    painter.setBrush(Qt::NoBrush);
+
+    switch (glyph) {
+    case AppIconGlyph::App: {
+        QPainterPath mark;
+        mark.moveTo(sx(5), sx(7));
+        mark.lineTo(sx(10), sx(3.5));
+        mark.lineTo(sx(19), sx(6));
+        mark.lineTo(sx(19), sx(18));
+        mark.lineTo(sx(10), sx(20.5));
+        mark.lineTo(sx(5), sx(17));
+        mark.lineTo(sx(11), sx(12));
+        mark.closeSubpath();
+        painter.setBrush(QColor("#007acc"));
+        painter.setPen(Qt::NoPen);
+        painter.drawPath(mark);
+        painter.setPen(QPen(QColor("#e8f3ff"), sx(1.6), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(QPointF(sx(10.5), sx(7.5)), QPointF(sx(15.5), sx(12)));
+        painter.drawLine(QPointF(sx(15.5), sx(12)), QPointF(sx(10.5), sx(16.5)));
+        break;
+    }
+    case AppIconGlyph::File:
+        painter.drawRoundedRect(QRectF(sx(6), sx(3.5), sx(11), sx(17)), sx(1.8), sx(1.8));
+        painter.drawLine(QPointF(sx(13), sx(3.5)), QPointF(sx(18), sx(8.5)));
+        painter.drawLine(QPointF(sx(13), sx(3.5)), QPointF(sx(13), sx(8.5)));
+        painter.drawLine(QPointF(sx(13), sx(8.5)), QPointF(sx(18), sx(8.5)));
+        break;
+    case AppIconGlyph::Folder:
+        painter.setPen(QPen(QColor("#42a5f5"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setBrush(QColor(66, 165, 245, 45));
+        {
+            QPainterPath folder;
+            folder.moveTo(sx(3.5), sx(7.5));
+            folder.lineTo(sx(9), sx(7.5));
+            folder.lineTo(sx(10.8), sx(5.5));
+            folder.lineTo(sx(20.5), sx(5.5));
+            folder.lineTo(sx(20.5), sx(18.5));
+            folder.lineTo(sx(3.5), sx(18.5));
+            folder.closeSubpath();
+            painter.drawPath(folder);
+        }
+        break;
+    case AppIconGlyph::Export:
+        painter.drawRoundedRect(QRectF(sx(5), sx(5), sx(14), sx(15)), sx(2), sx(2));
+        painter.drawLine(QPointF(sx(12), sx(15)), QPointF(sx(12), sx(3)));
+        painter.drawLine(QPointF(sx(8), sx(7)), QPointF(sx(12), sx(3)));
+        painter.drawLine(QPointF(sx(16), sx(7)), QPointF(sx(12), sx(3)));
+        break;
+    case AppIconGlyph::Settings:
+    case AppIconGlyph::Advanced: {
+        const QPointF center(sx(12), sx(12));
+        painter.drawEllipse(center, sx(3), sx(3));
+        for (int i = 0; i < 8; ++i) {
+            const qreal angle = qDegreesToRadians(i * 45.0);
+            QPointF inner(center.x() + qCos(angle) * sx(6), center.y() + qSin(angle) * sx(6));
+            QPointF outer(center.x() + qCos(angle) * sx(8.5), center.y() + qSin(angle) * sx(8.5));
+            painter.drawLine(inner, outer);
+        }
+        if (glyph == AppIconGlyph::Advanced) {
+            painter.setPen(softPen);
+            painter.drawLine(QPointF(sx(6), sx(19.5)), QPointF(sx(18), sx(19.5)));
+        }
+        break;
+    }
+    case AppIconGlyph::Profiles:
+        painter.drawEllipse(QPointF(sx(10), sx(8)), sx(3.2), sx(3.2));
+        painter.drawArc(QRectF(sx(4.5), sx(12), sx(11), sx(8)), 20 * 16, 140 * 16);
+        painter.setPen(softPen);
+        painter.drawEllipse(QPointF(sx(16.5), sx(9.5)), sx(2.3), sx(2.3));
+        painter.drawArc(QRectF(sx(12.5), sx(13.5), sx(7), sx(5.5)), 20 * 16, 140 * 16);
+        break;
+    case AppIconGlyph::ClearChat:
+        painter.drawRoundedRect(QRectF(sx(4), sx(5), sx(16), sx(12)), sx(2.5), sx(2.5));
+        painter.drawLine(QPointF(sx(8), sx(20)), QPointF(sx(11), sx(17)));
+        painter.drawLine(QPointF(sx(9), sx(9)), QPointF(sx(15), sx(15)));
+        painter.drawLine(QPointF(sx(15), sx(9)), QPointF(sx(9), sx(15)));
+        break;
+    case AppIconGlyph::Theme:
+        painter.setBrush(QColor(0, 122, 204, 45));
+        painter.drawEllipse(QPointF(sx(12), sx(12)), sx(7), sx(7));
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(softPen);
+        painter.drawArc(QRectF(sx(8), sx(5), sx(11), sx(14)), 90 * 16, 180 * 16);
+        break;
+    case AppIconGlyph::Quit:
+        painter.drawLine(QPointF(sx(12), sx(4)), QPointF(sx(12), sx(12)));
+        painter.drawArc(QRectF(sx(5), sx(5), sx(14), sx(14)), 210 * 16, 300 * 16);
+        break;
+    case AppIconGlyph::NewChat:
+        painter.drawRoundedRect(QRectF(sx(4), sx(5), sx(16), sx(12)), sx(2.5), sx(2.5));
+        painter.drawLine(QPointF(sx(12), sx(8)), QPointF(sx(12), sx(14)));
+        painter.drawLine(QPointF(sx(9), sx(11)), QPointF(sx(15), sx(11)));
+        painter.drawLine(QPointF(sx(8), sx(20)), QPointF(sx(11), sx(17)));
+        break;
+    case AppIconGlyph::Send:
+        painter.setBrush(accent);
+        painter.setPen(Qt::NoPen);
+        painter.drawPolygon(QPolygonF{
+            QPointF(sx(5), sx(4)),
+            QPointF(sx(20), sx(12)),
+            QPointF(sx(5), sx(20)),
+            QPointF(sx(8), sx(12))
+        });
+        break;
+    case AppIconGlyph::Stop:
+        painter.setBrush(QColor("#ef4444"));
+        painter.setPen(Qt::NoPen);
+        painter.drawRoundedRect(QRectF(sx(7), sx(7), sx(10), sx(10)), sx(2), sx(2));
+        break;
+    case AppIconGlyph::Chat:
+        painter.setPen(QPen(QColor("#4fc3f7"), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawRoundedRect(QRectF(sx(4), sx(5), sx(16), sx(12)), sx(3), sx(3));
+        painter.drawLine(QPointF(sx(8), sx(20)), QPointF(sx(11), sx(17)));
+        painter.drawLine(QPointF(sx(8), sx(9.5)), QPointF(sx(16), sx(9.5)));
+        painter.drawLine(QPointF(sx(8), sx(13)), QPointF(sx(14), sx(13)));
+        break;
+    case AppIconGlyph::Trash:
+        painter.setPen(QPen(QColor("#ef5350"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(QPointF(sx(7), sx(7)), QPointF(sx(17), sx(7)));
+        painter.drawLine(QPointF(sx(10), sx(5)), QPointF(sx(14), sx(5)));
+        painter.drawRoundedRect(QRectF(sx(8), sx(8), sx(8), sx(11)), sx(1.5), sx(1.5));
+        painter.drawLine(QPointF(sx(10.5), sx(10.5)), QPointF(sx(10.5), sx(16.5)));
+        painter.drawLine(QPointF(sx(13.5), sx(10.5)), QPointF(sx(13.5), sx(16.5)));
+        break;
+    case AppIconGlyph::Search:
+        painter.setPen(QPen(QColor("#9ca3af"), sx(1.9), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawEllipse(QPointF(sx(10.5), sx(10.5)), sx(5), sx(5));
+        painter.drawLine(QPointF(sx(14.5), sx(14.5)), QPointF(sx(19), sx(19)));
+        break;
+    case AppIconGlyph::ChevronUp:
+        painter.setPen(QPen(QColor("#cbd5e1"), sx(2), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(QPointF(sx(7), sx(14)), QPointF(sx(12), sx(9)));
+        painter.drawLine(QPointF(sx(12), sx(9)), QPointF(sx(17), sx(14)));
+        break;
+    case AppIconGlyph::ChevronDown:
+        painter.setPen(QPen(QColor("#cbd5e1"), sx(2), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(QPointF(sx(7), sx(10)), QPointF(sx(12), sx(15)));
+        painter.drawLine(QPointF(sx(12), sx(15)), QPointF(sx(17), sx(10)));
+        break;
+    case AppIconGlyph::Close:
+    case AppIconGlyph::Cancel:
+        painter.setPen(QPen(QColor("#ef5350"), sx(2), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(QPointF(sx(8), sx(8)), QPointF(sx(16), sx(16)));
+        painter.drawLine(QPointF(sx(16), sx(8)), QPointF(sx(8), sx(16)));
+        break;
+    case AppIconGlyph::Copy:
+        painter.setPen(QPen(QColor("#90caf9"), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawRoundedRect(QRectF(sx(8), sx(7), sx(10), sx(12)), sx(1.8), sx(1.8));
+        painter.drawRoundedRect(QRectF(sx(5), sx(4), sx(10), sx(12)), sx(1.8), sx(1.8));
+        break;
+    case AppIconGlyph::Refresh:
+        painter.setPen(QPen(QColor("#81c784"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawArc(QRectF(sx(5), sx(5), sx(14), sx(14)), 35 * 16, 250 * 16);
+        painter.drawLine(QPointF(sx(16.8), sx(5.6)), QPointF(sx(18.8), sx(5.8)));
+        painter.drawLine(QPointF(sx(18.8), sx(5.8)), QPointF(sx(18.1), sx(8.2)));
+        break;
+    case AppIconGlyph::Branch:
+        painter.setPen(QPen(QColor("#ce93d8"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(QPointF(sx(8), sx(6)), QPointF(sx(8), sx(18)));
+        painter.drawLine(QPointF(sx(8), sx(12)), QPointF(sx(16), sx(8)));
+        painter.drawEllipse(QPointF(sx(8), sx(6)), sx(2), sx(2));
+        painter.drawEllipse(QPointF(sx(8), sx(18)), sx(2), sx(2));
+        painter.drawEllipse(QPointF(sx(16), sx(8)), sx(2), sx(2));
+        break;
+    case AppIconGlyph::Edit:
+        painter.setPen(QPen(QColor("#ffb74d"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(QPointF(sx(7), sx(17)), QPointF(sx(16.5), sx(7.5)));
+        painter.drawLine(QPointF(sx(14), sx(5)), QPointF(sx(19), sx(10)));
+        painter.drawLine(QPointF(sx(6), sx(18)), QPointF(sx(10), sx(17)));
+        break;
+    case AppIconGlyph::Save:
+        painter.setPen(QPen(QColor("#4ade80"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawRoundedRect(QRectF(sx(5), sx(4), sx(14), sx(16)), sx(2), sx(2));
+        painter.drawLine(QPointF(sx(8), sx(4)), QPointF(sx(8), sx(9)));
+        painter.drawLine(QPointF(sx(16), sx(4)), QPointF(sx(16), sx(9)));
+        painter.drawRoundedRect(QRectF(sx(8), sx(13), sx(8), sx(5)), sx(1), sx(1));
+        break;
+    case AppIconGlyph::Image:
+        painter.setPen(QPen(QColor("#64b5f6"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawRoundedRect(QRectF(sx(4), sx(5), sx(16), sx(14)), sx(2), sx(2));
+        painter.drawEllipse(QPointF(sx(15.5), sx(9)), sx(1.5), sx(1.5));
+        painter.drawLine(QPointF(sx(6.5), sx(16.5)), QPointF(sx(10), sx(12.5)));
+        painter.drawLine(QPointF(sx(10), sx(12.5)), QPointF(sx(13), sx(15)));
+        painter.drawLine(QPointF(sx(13), sx(15)), QPointF(sx(16), sx(11.5)));
+        painter.drawLine(QPointF(sx(16), sx(11.5)), QPointF(sx(19), sx(16.5)));
+        break;
+    case AppIconGlyph::Code:
+        painter.setPen(QPen(QColor("#4dd0e1"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(QPointF(sx(9), sx(8)), QPointF(sx(5), sx(12)));
+        painter.drawLine(QPointF(sx(5), sx(12)), QPointF(sx(9), sx(16)));
+        painter.drawLine(QPointF(sx(15), sx(8)), QPointF(sx(19), sx(12)));
+        painter.drawLine(QPointF(sx(19), sx(12)), QPointF(sx(15), sx(16)));
+        painter.drawLine(QPointF(sx(13), sx(7)), QPointF(sx(11), sx(17)));
+        break;
+    case AppIconGlyph::Key:
+        painter.setPen(QPen(QColor("#ffd54f"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawEllipse(QPointF(sx(8), sx(10)), sx(3), sx(3));
+        painter.drawLine(QPointF(sx(11), sx(10)), QPointF(sx(20), sx(10)));
+        painter.drawLine(QPointF(sx(16), sx(10)), QPointF(sx(16), sx(13)));
+        painter.drawLine(QPointF(sx(19), sx(10)), QPointF(sx(19), sx(12)));
+        break;
+    case AppIconGlyph::Model:
+        painter.setPen(QPen(QColor("#26c6da"), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawRoundedRect(QRectF(sx(5), sx(5), sx(14), sx(14)), sx(3), sx(3));
+        painter.drawLine(QPointF(sx(9), sx(9)), QPointF(sx(15), sx(9)));
+        painter.drawLine(QPointF(sx(9), sx(12)), QPointF(sx(15), sx(12)));
+        painter.drawLine(QPointF(sx(9), sx(15)), QPointF(sx(13), sx(15)));
+        break;
+    case AppIconGlyph::Pin:
+    case AppIconGlyph::Unpin:
+        painter.setPen(QPen(QColor("#f06292"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(QPointF(sx(12), sx(13)), QPointF(sx(12), sx(21)));
+        painter.drawLine(QPointF(sx(8), sx(5)), QPointF(sx(16), sx(5)));
+        painter.drawLine(QPointF(sx(10), sx(5)), QPointF(sx(9), sx(13)));
+        painter.drawLine(QPointF(sx(14), sx(5)), QPointF(sx(15), sx(13)));
+        painter.drawLine(QPointF(sx(9), sx(13)), QPointF(sx(15), sx(13)));
+        if (glyph == AppIconGlyph::Unpin) {
+            painter.drawLine(QPointF(sx(6), sx(18)), QPointF(sx(18), sx(6)));
+        }
+        break;
+    case AppIconGlyph::Warning:
+        painter.setPen(QPen(QColor("#ffb300"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawPolygon(QPolygonF{QPointF(sx(12), sx(4)), QPointF(sx(21), sx(19)), QPointF(sx(3), sx(19))});
+        painter.drawLine(QPointF(sx(12), sx(9)), QPointF(sx(12), sx(14)));
+        painter.drawPoint(QPointF(sx(12), sx(16.5)));
+        break;
+    case AppIconGlyph::Info:
+        painter.setPen(QPen(QColor("#42a5f5"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawEllipse(QPointF(sx(12), sx(12)), sx(8), sx(8));
+        painter.drawLine(QPointF(sx(12), sx(11)), QPointF(sx(12), sx(16)));
+        painter.drawPoint(QPointF(sx(12), sx(8)));
+        break;
+    case AppIconGlyph::Database:
+        painter.setPen(QPen(QColor("#fdd835"), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawEllipse(QPointF(sx(12), sx(6.5)), sx(6.5), sx(2.5));
+        painter.drawLine(QPointF(sx(5.5), sx(6.5)), QPointF(sx(5.5), sx(17)));
+        painter.drawLine(QPointF(sx(18.5), sx(6.5)), QPointF(sx(18.5), sx(17)));
+        painter.drawEllipse(QPointF(sx(12), sx(17)), sx(6.5), sx(2.5));
+        painter.drawArc(QRectF(sx(5.5), sx(9.5), sx(13), sx(5)), 180 * 16, 180 * 16);
+        break;
+    case AppIconGlyph::Terminal:
+        painter.setPen(QPen(QColor("#90a4ae"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawRoundedRect(QRectF(sx(4), sx(5), sx(16), sx(14)), sx(2), sx(2));
+        painter.drawLine(QPointF(sx(7), sx(9)), QPointF(sx(10), sx(12)));
+        painter.drawLine(QPointF(sx(10), sx(12)), QPointF(sx(7), sx(15)));
+        painter.drawLine(QPointF(sx(12), sx(15)), QPointF(sx(17), sx(15)));
+        break;
+    case AppIconGlyph::Globe:
+        painter.setPen(QPen(QColor("#29b6f6"), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawEllipse(QPointF(sx(12), sx(12)), sx(8), sx(8));
+        painter.drawLine(QPointF(sx(4), sx(12)), QPointF(sx(20), sx(12)));
+        painter.drawArc(QRectF(sx(8), sx(4), sx(8), sx(16)), 90 * 16, 180 * 16);
+        painter.drawArc(QRectF(sx(8), sx(4), sx(8), sx(16)), -90 * 16, 180 * 16);
+        break;
+    }
+
+    return QIcon(pixmap);
+}
+
+}
 
 AvatarLabel::AvatarLabel(const QString &role, QWidget *parent)
     : QLabel(parent)
@@ -115,16 +439,7 @@ ChatListItem::ChatListItem(const QString &title, const QString &subtitle, int in
 
     m_iconLabel = new QLabel(this);
     m_iconLabel->setFixedSize(16, 16);
-    QPixmap iconPixmap(16, 16);
-    iconPixmap.fill(Qt::transparent);
-    QPainter iconPainter(&iconPixmap);
-    iconPainter.setRenderHint(QPainter::Antialiasing);
-    iconPainter.setPen(QPen(QColor("#8e8e8e"), 1.5));
-    iconPainter.setBrush(Qt::NoBrush);
-    iconPainter.drawRoundedRect(2, 3, 12, 10, 2, 2);
-    iconPainter.drawLine(6, 3, 6, 1);
-    iconPainter.drawLine(10, 3, 10, 1);
-    m_iconLabel->setPixmap(iconPixmap);
+    m_iconLabel->setPixmap(makeLineIcon(isPinned ? AppIconGlyph::Pin : AppIconGlyph::Chat).pixmap(16, 16));
     layout->addWidget(m_iconLabel, 0, Qt::AlignVCenter);
 
     QWidget *textContainer = new QWidget(this);
@@ -145,7 +460,8 @@ ChatListItem::ChatListItem(const QString &title, const QString &subtitle, int in
     layout->addWidget(textContainer, 1);
 
     m_deleteBtn = new QToolButton(this);
-    m_deleteBtn->setIcon(style()->standardIcon(QStyle::SP_TrashIcon));
+    m_deleteBtn->setIcon(makeLineIcon(AppIconGlyph::Trash));
+    m_deleteBtn->setIconSize(QSize(14, 14));
     m_deleteBtn->setFixedSize(20, 20);
     m_deleteBtn->setStyleSheet(
         "QToolButton { "
@@ -165,8 +481,8 @@ ChatListItem::ChatListItem(const QString &title, const QString &subtitle, int in
     setContextMenuPolicy(Qt::CustomContextMenu);
     connect(this, &QWidget::customContextMenuRequested, [this](const QPoint &pos) {
         QMenu menu(this);
-        QAction *renameAction = menu.addAction("Rename");
-        QAction *pinAction = menu.addAction(m_isPinned ? "Unpin" : "Pin");
+        QAction *renameAction = menu.addAction(makeLineIcon(AppIconGlyph::Edit), "Rename");
+        QAction *pinAction = menu.addAction(makeLineIcon(m_isPinned ? AppIconGlyph::Unpin : AppIconGlyph::Pin), m_isPinned ? "Unpin" : "Pin");
         QAction *chosen = menu.exec(mapToGlobal(pos));
         if (chosen == renameAction) {
             emit renameRequested(m_index);
@@ -288,6 +604,8 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
     copyLayout->addStretch();
 
     m_copyBtn = new QPushButton("Copy", m_copyContainer);
+    m_copyBtn->setIcon(makeLineIcon(AppIconGlyph::Copy));
+    m_copyBtn->setIconSize(QSize(14, 14));
     m_copyBtn->setStyleSheet(
         "QPushButton { "
         "  background-color: #334155; "
@@ -300,12 +618,22 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
         "QPushButton:hover { background-color: #475569; } "
         "QPushButton:disabled { background-color: #1f2937; color: #4ade80; }"
     );
-    m_copyBtn->setMaximumWidth(60);
+    m_copyBtn->setMaximumWidth(74);
     copyLayout->addWidget(m_copyBtn);
 
     connect(m_copyBtn, &QPushButton::clicked, [this]() {
         QClipboard *clipboard = QApplication::clipboard();
-        clipboard->setText(m_fullContent);
+        const QString copiedText = m_fullContent;
+        clipboard->setText(copiedText);
+
+        // Keep copied drafts from being accidentally pasted into another app.
+        // Only clear the clipboard if it still contains the text we placed there;
+        // this avoids deleting a newer copy made by the user.
+        QTimer::singleShot(30000, [copiedText]() {
+            QClipboard *currentClipboard = QApplication::clipboard();
+            if (currentClipboard && currentClipboard->text() == copiedText)
+                currentClipboard->clear();
+        });
 
         m_copyBtn->setText("Copied!");
         m_copyBtn->setEnabled(false);
@@ -317,6 +645,8 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
     });
 
     m_regenerateBtn = new QPushButton("Regenerate", m_card);
+    m_regenerateBtn->setIcon(makeLineIcon(AppIconGlyph::Refresh));
+    m_regenerateBtn->setIconSize(QSize(14, 14));
     m_regenerateBtn->setStyleSheet(
         "QPushButton { "
         "  background-color: #334155; "
@@ -328,12 +658,16 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
         "} "
         "QPushButton:hover { background-color: #475569; }"
     );
-    m_regenerateBtn->setMaximumWidth(80);
+    m_regenerateBtn->setMaximumWidth(112);
     m_regenerateBtn->setVisible(false);
     copyLayout->addWidget(m_regenerateBtn);
-    connect(m_regenerateBtn, &QPushButton::clicked, this, &ChatMessageCard::regenerateRequested);
+    connect(m_regenerateBtn, &QPushButton::clicked, this, [this]() {
+        emit regenerateRequested(m_messageIndex);
+    });
 
     m_branchBtn = new QPushButton("Branch", m_card);
+    m_branchBtn->setIcon(makeLineIcon(AppIconGlyph::Branch));
+    m_branchBtn->setIconSize(QSize(14, 14));
     m_branchBtn->setStyleSheet(
         "QPushButton { "
         "  background-color: #334155; "
@@ -345,7 +679,7 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
         "} "
         "QPushButton:hover { background-color: #475569; }"
     );
-    m_branchBtn->setMaximumWidth(60);
+    m_branchBtn->setMaximumWidth(76);
     m_branchBtn->setVisible(false);
     copyLayout->addWidget(m_branchBtn);
     connect(m_branchBtn, &QPushButton::clicked, [this]() {
@@ -353,6 +687,8 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
     });
 
     m_editBtn = new QPushButton("Edit", m_card);
+    m_editBtn->setIcon(makeLineIcon(AppIconGlyph::Edit));
+    m_editBtn->setIconSize(QSize(14, 14));
     m_editBtn->setStyleSheet(
         "QPushButton { "
         "  background-color: #334155; "
@@ -364,7 +700,7 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
         "} "
         "QPushButton:hover { background-color: #475569; }"
     );
-    m_editBtn->setMaximumWidth(50);
+    m_editBtn->setMaximumWidth(62);
     m_editBtn->setVisible(false);
     copyLayout->addWidget(m_editBtn);
     connect(m_editBtn, &QPushButton::clicked, [this]() {
@@ -413,9 +749,44 @@ void ChatMessageCard::appendContent(const QString &content)
 
     if (m_isStreaming) {
         if (m_streamLabel) {
-            m_streamLabel->setText(escapeHtml(m_fullContent));
+            // Stream in plain text to avoid reparsing rich text on every chunk.
+            m_streamLabel->setText(m_fullContent);
         }
     } else {
+        rebuildContent();
+    }
+}
+
+void ChatMessageCard::setContentFontSize(int pixels)
+{
+    if (m_contentFontSize == pixels) {
+        return;
+    }
+    m_contentFontSize = pixels;
+
+    if (m_streamLabel) {
+        m_streamLabel->setStyleSheet(
+            "QLabel { "
+            "  color: #ececf1; "
+            "  font-size: " + QString::number(m_contentFontSize) + "px; "
+            "  line-height: 1.6; "
+            "} "
+            "QLabel a { color: #60a5fa; }"
+        );
+    }
+    if (m_editField) {
+        m_editField->setStyleSheet(
+            "QTextEdit { "
+            "  background-color: #1a1a1a; "
+            "  color: #ececf1; "
+            "  border: 1px solid #4d4d4f; "
+            "  border-radius: 6px; "
+            "  padding: 8px; "
+            "  font-size: " + QString::number(m_contentFontSize) + "px; "
+            "}"
+        );
+    }
+    if (!m_isStreaming) {
         rebuildContent();
     }
 }
@@ -439,18 +810,18 @@ void ChatMessageCard::setStreaming(bool streaming)
             m_streamLabel = new QLabel(m_card);
             m_streamLabel->setWordWrap(true);
             m_streamLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-            m_streamLabel->setTextFormat(Qt::RichText);
+            m_streamLabel->setTextFormat(Qt::PlainText);
             m_streamLabel->setStyleSheet(
                 "QLabel { "
                 "  color: #ececf1; "
-                "  font-size: 15px; "
+                "  font-size: " + QString::number(m_contentFontSize) + "px; "
                 "  line-height: 1.6; "
                 "} "
                 "QLabel a { color: #60a5fa; }"
             );
             m_layout->insertWidget(0, m_streamLabel);
         }
-        m_streamLabel->setText(escapeHtml(m_fullContent));
+        m_streamLabel->setText(m_fullContent);
     } else {
         if (m_streamLabel) {
             delete m_streamLabel;
@@ -519,7 +890,7 @@ void ChatMessageCard::startEditing()
         "  border: 1px solid #4d4d4f; "
         "  border-radius: 6px; "
         "  padding: 8px; "
-        "  font-size: 14px; "
+        "  font-size: " + QString::number(m_contentFontSize) + "px; "
         "}"
     );
 
@@ -528,6 +899,8 @@ void ChatMessageCard::startEditing()
     editBtnLayout->addStretch();
 
     QPushButton *saveBtn = new QPushButton("Save", m_card);
+    saveBtn->setIcon(makeLineIcon(AppIconGlyph::Save));
+    saveBtn->setIconSize(QSize(14, 14));
     saveBtn->setStyleSheet(
         "QPushButton { "
         "  background-color: #005c4b; "
@@ -540,6 +913,8 @@ void ChatMessageCard::startEditing()
         "QPushButton:hover { background-color: #007a5e; }"
     );
     QPushButton *cancelBtn = new QPushButton("Cancel", m_card);
+    cancelBtn->setIcon(makeLineIcon(AppIconGlyph::Cancel));
+    cancelBtn->setIconSize(QSize(14, 14));
     cancelBtn->setStyleSheet(
         "QPushButton { "
         "  background-color: #404040; "
@@ -586,16 +961,11 @@ void ChatMessageCard::rebuildContent()
     renderMarkdown(m_fullContent);
 }
 
-QString ChatMessageCard::escapeHtml(const QString &text)
-{
-    QString escaped = text.toHtmlEscaped();
-    escaped.replace("\n", "<br>");
-    return escaped;
-}
-
 QString ChatMessageCard::renderInlineMarkdown(const QString &text)
 {
-    QString result = text;
+    // Escape before the markup substitutions: model and user text must never be
+    // parsed as rich text (`a < b`, a literal `<b>`, `&nbsp;`, ...).
+    QString result = text.toHtmlEscaped();
 
     result.replace(QRegularExpression("\\*\\*(.+?)\\*\\*"), "<b>\\1</b>");
     result.replace(QRegularExpression("\\*(.+?)\\*"), "<i>\\1</i>");
@@ -661,7 +1031,7 @@ void ChatMessageCard::addTextBlock(const QString &text)
     label->setStyleSheet(
         "QLabel { "
         "  color: #ececf1; "
-        "  font-size: 15px; "
+        "  font-size: " + QString::number(m_contentFontSize) + "px; "
         "  line-height: 1.75; "
         "} "
         "QLabel a { color: #60a5fa; }"
@@ -686,7 +1056,7 @@ void ChatMessageCard::addCodeBlock(const QString &code, const QString &language)
         "  background-color: #1a1a1a; "
         "  color: #e6e6e6; "
         "  font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace; "
-        "  font-size: 14px; "
+        "  font-size: " + QString::number(qMax(10, m_contentFontSize - 1)) + "px; "
         "  border: none; "
         "  border-bottom-left-radius: 8px; "
         "  border-bottom-right-radius: 8px; "
@@ -706,6 +1076,8 @@ void ChatMessageCard::addCodeBlock(const QString &code, const QString &language)
         );
 
         QPushButton *copyBtn = new QPushButton("Copy", codeContainer);
+        copyBtn->setIcon(makeLineIcon(AppIconGlyph::Copy));
+        copyBtn->setIconSize(QSize(14, 14));
         copyBtn->setStyleSheet(
             "QPushButton { "
             "  background-color: #404040; "
@@ -732,7 +1104,13 @@ void ChatMessageCard::addCodeBlock(const QString &code, const QString &language)
         codeLayout->addWidget(headerFrame);
         connect(copyBtn, &QPushButton::clicked, [codeEdit]() {
             QClipboard *clipboard = QApplication::clipboard();
-            clipboard->setText(codeEdit->toPlainText());
+            const QString copiedText = codeEdit->toPlainText();
+            clipboard->setText(copiedText);
+            QTimer::singleShot(30000, [copiedText]() {
+                QClipboard *currentClipboard = QApplication::clipboard();
+                if (currentClipboard && currentClipboard->text() == copiedText)
+                    currentClipboard->clear();
+            });
         });
     }
 
@@ -763,35 +1141,44 @@ void ChatMessageCard::renderMarkdown(const QString &text)
 
 void ChatMessageCard::highlightText(const QString &text)
 {
-    if (text.isEmpty()) {
-        clearHighlight();
+    // Keep streaming updates lightweight; the final rendered card will
+    // receive full markdown/highlight treatment once generation completes.
+    if (m_isStreaming) {
+        return;
+    }
+    if (m_highlightText == text) {
         return;
     }
 
-    QString escaped = escapeHtml(m_fullContent);
-    QRegularExpression regex("(" + QRegularExpression::escape(text) + ")", QRegularExpression::CaseInsensitiveOption);
-    QString highlighted = escaped.replace(regex, "<mark style='background-color:#fbbf24;color:#000;'>\\1</mark>");
+    m_highlightText = text;
+    rebuildContent();
+    if (text.isEmpty()) {
+        return;
+    }
 
-    if (m_streamLabel) {
-        m_streamLabel->setText(highlighted);
-    } else {
-        rebuildContent();
-        QLabel *firstLabel = m_card->findChild<QLabel*>();
-        if (firstLabel) {
-            QString orig = firstLabel->text();
-            QString hl = orig.replace(regex, "<mark style='background-color:#fbbf24;color:#000;'>\\1</mark>");
-            firstLabel->setText(hl);
+    const QRegularExpression regex("(" + QRegularExpression::escape(text) + ")", QRegularExpression::CaseInsensitiveOption);
+    const QString mark = "<mark style='background-color:#fbbf24;color:#000;'>\\1</mark>";
+    const auto labels = m_card->findChildren<QLabel*>();
+    for (QLabel *label : labels) {
+        if (label == m_tokenLabel || label == m_timestampLabel) {
+            continue;
         }
+        QString labelText = label->text();
+        if (labelText.isEmpty()) {
+            continue;
+        }
+        labelText.replace(regex, mark);
+        label->setText(labelText);
     }
 }
 
 void ChatMessageCard::clearHighlight()
 {
-    if (m_streamLabel) {
-        m_streamLabel->setText(escapeHtml(m_fullContent));
-    } else {
-        rebuildContent();
+    if (m_isStreaming || m_highlightText.isEmpty()) {
+        return;
     }
+    m_highlightText.clear();
+    rebuildContent();
 }
 
 ChatSearchBar::ChatSearchBar(QWidget *parent)
@@ -831,22 +1218,32 @@ ChatSearchBar::ChatSearchBar(QWidget *parent)
     m_searchInput = new QLineEdit(this);
     m_searchInput->setPlaceholderText("Search in chat...");
     m_searchInput->setMaximumWidth(250);
+    m_searchInput->addAction(makeLineIcon(AppIconGlyph::Search), QLineEdit::LeadingPosition);
     connect(m_searchInput, &QLineEdit::textChanged, this, &ChatSearchBar::searchTextChanged);
 
     m_matchCount = new QLabel("0/0", this);
     m_matchCount->setStyleSheet("QLabel { color: #8e8e8e; font-size: 12px; padding: 0 4px; }");
     m_matchCount->setMaximumWidth(50);
 
-    m_prevBtn = new QPushButton("▲", this);
-    m_prevBtn->setMaximumWidth(24);
+    m_prevBtn = new QPushButton(this);
+    m_prevBtn->setIcon(makeLineIcon(AppIconGlyph::ChevronUp));
+    m_prevBtn->setIconSize(QSize(14, 14));
+    m_prevBtn->setFixedSize(26, 26);
+    m_prevBtn->setToolTip("Previous match");
     connect(m_prevBtn, &QPushButton::clicked, this, &ChatSearchBar::findPrevious);
 
-    m_nextBtn = new QPushButton("▼", this);
-    m_nextBtn->setMaximumWidth(24);
+    m_nextBtn = new QPushButton(this);
+    m_nextBtn->setIcon(makeLineIcon(AppIconGlyph::ChevronDown));
+    m_nextBtn->setIconSize(QSize(14, 14));
+    m_nextBtn->setFixedSize(26, 26);
+    m_nextBtn->setToolTip("Next match");
     connect(m_nextBtn, &QPushButton::clicked, this, &ChatSearchBar::findNext);
 
-    m_closeBtn = new QPushButton("✕", this);
-    m_closeBtn->setMaximumWidth(24);
+    m_closeBtn = new QPushButton(this);
+    m_closeBtn->setIcon(makeLineIcon(AppIconGlyph::Close));
+    m_closeBtn->setIconSize(QSize(14, 14));
+    m_closeBtn->setFixedSize(26, 26);
+    m_closeBtn->setToolTip("Close search");
     connect(m_closeBtn, &QPushButton::clicked, this, &ChatSearchBar::onClose);
 
     layout->addWidget(m_searchInput);
@@ -886,8 +1283,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_currentHighlightIndex(-1)
     , m_currentProfileName("")
     , m_autoScroll(true)
-    , m_scrollToBottomQueued(false)
-    , m_scrollToBottomForcePending(false)
+    , m_stickToBottom(true)
     , m_chatRenderGeneration(0)
     , m_chatRenderCursor(-1)
     , m_chatListRenderGeneration(0)
@@ -896,6 +1292,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_retryCount(0)
     , m_maxRetries(3)
     , m_retryTimer(new QTimer(this))
+    , m_backupTimer(nullptr)
     , m_notificationSound(nullptr)
     , m_soundInitialized(false)
     , m_chatStartTime()
@@ -904,9 +1301,12 @@ MainWindow::MainWindow(QWidget *parent)
     , m_streamStartTime(0)
     , m_streamTokenCount(0)
     , m_streamRenderTimer(new QTimer(this))
+    , m_scrollFollowTimer(new QTimer(this))
+    , m_requestChatIndex(-1)
     , m_requestInFlight(false)
 {
     setWindowTitle("SimpleAIClient");
+    setWindowIcon(makeLineIcon(AppIconGlyph::App, 256));
     resize(1200, 800);
     setAcceptDrops(true);
 
@@ -922,7 +1322,6 @@ MainWindow::MainWindow(QWidget *parent)
     new QShortcut(QKeySequence("Ctrl+E"), this, SLOT(onExportChat()));
     new QShortcut(QKeySequence("Ctrl+,"), this, SLOT(onSettings()));
 
-    connect(m_attachButton, &QToolButton::clicked, this, &MainWindow::onAttachImage);
     connect(m_sendButton, &QToolButton::clicked, this, &MainWindow::onSendMessage);
     connect(m_apiClient, &ApiClient::responseReceived, this, &MainWindow::onResponseReceived);
     connect(m_apiClient, &ApiClient::responseChunk, this, &MainWindow::onResponseChunk);
@@ -934,9 +1333,45 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_newChatButton, &QPushButton::clicked, this, &MainWindow::onNewChat);
     connect(m_profileCombo, QOverload<const QString &>::of(&QComboBox::currentTextChanged), this, &MainWindow::onProfileChanged);
     connect(m_inputField, &QTextEdit::textChanged, this, &MainWindow::updateCharCounter);
-    m_streamRenderTimer->setInterval(33);
+    // Slightly slower updates keep the UI smoother during long streams.
+    m_streamRenderTimer->setInterval(50);
     m_streamRenderTimer->setSingleShot(false);
     connect(m_streamRenderTimer, &QTimer::timeout, this, &MainWindow::flushStreamingChunks);
+
+    // Connected once for the lifetime of the window: the indicator is created
+    // and destroyed per request, so the slot has to re-check the pointer.
+    connect(m_thinkingTimer, &QTimer::timeout, this, [this]() {
+        if (!m_thinkingIndicator) return;
+        m_thinkingDots = (m_thinkingDots + 1) % 4;
+        m_thinkingIndicator->setText("Thinking" + QString(m_thinkingDots, '.'));
+    });
+
+    // Follow the live layout target without restarting an animation per chunk.
+    m_scrollFollowTimer->setInterval(16);
+    m_scrollFollowTimer->setTimerType(Qt::PreciseTimer);
+    connect(m_scrollFollowTimer, &QTimer::timeout, this, [this, clock = QElapsedTimer()]() mutable {
+        if (!m_autoScroll || !m_stickToBottom || !m_scrollArea) {
+            m_scrollFollowTimer->stop();
+            clock.invalidate();
+            return;
+        }
+        QScrollBar *bar = m_scrollArea->verticalScrollBar();
+        if (!bar || bar->isSliderDown()) {
+            m_scrollFollowTimer->stop();
+            clock.invalidate();
+            return;
+        }
+        const qint64 elapsed = clock.isValid() ? clock.restart() : 16;
+        if (!clock.isValid()) clock.start();
+        const int distance = bar->maximum() - bar->value();
+        const double blend = 1.0 - std::exp(-qMin(elapsed, qint64(50)) / 85.0);
+        const int step = qMax(1, int(std::ceil(distance * blend)));
+        bar->setValue(bar->value() + qMin(distance, step));
+        if (bar->value() == bar->maximum()) {
+            m_scrollFollowTimer->stop();
+            clock.invalidate();
+        }
+    });
 
     new QShortcut(QKeySequence("Ctrl+F"), this, [this]() { showSearchBar(); });
     new QShortcut(QKeySequence("Ctrl+="), this, [this]() { adjustFontSize(1); });
@@ -945,13 +1380,7 @@ MainWindow::MainWindow(QWidget *parent)
     new QShortcut(QKeySequence("Ctrl+?"), this, [this]() { showShortcutsDialog(); });
 
     QTimer::singleShot(0, this, [this]() {
-        if (m_chatSessions.isEmpty()) {
-            createNewChat();
-        } else {
-            switchToChat(0);
-            updateChatList();
-        }
-
+        restoreLastChatSelection();
         fetchModels();
     });
 }
@@ -1018,7 +1447,8 @@ void MainWindow::setupUI()
     );
 
     m_attachButton = new QToolButton;
-    m_attachButton->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
+    m_attachButton->setIcon(makeLineIcon(AppIconGlyph::Image));
+    m_attachButton->setIconSize(QSize(20, 20));
     m_attachButton->setFixedSize(36, 36);
     m_attachButton->setStyleSheet(
         "QToolButton { "
@@ -1031,7 +1461,8 @@ void MainWindow::setupUI()
     m_attachButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
     connect(m_attachButton, &QToolButton::clicked, this, &MainWindow::onAttachImage);
 
-    m_sendButton->setIcon(style()->standardIcon(QStyle::SP_ArrowRight));
+    m_sendButton->setIcon(makeLineIcon(AppIconGlyph::Send));
+    m_sendButton->setIconSize(QSize(20, 20));
     m_sendButton->setFixedSize(40, 40);
     m_sendButton->setStyleSheet(
         "QToolButton { "
@@ -1055,8 +1486,9 @@ void MainWindow::setupUI()
     const QString textMuted = "#9ca3af";
 
     m_sidebar = new QWidget(this);
-    m_sidebar->setMinimumWidth(260);
-    m_sidebar->setMaximumWidth(320);
+    // Keep the navigation rail stable so the chat list does not "breathe"
+    // as the main panel content changes or the window is resized.
+    m_sidebar->setFixedWidth(300);
     m_sidebar->setStyleSheet(QString(
         "QWidget { background-color: %1; color: %2; border-right: 1px solid %3; }")
         .arg(panelSurface).arg(textStrong).arg(panelBorder));
@@ -1084,10 +1516,14 @@ void MainWindow::setupUI()
         "QPushButton:hover { background-color: #16a34a; } "
         "QPushButton:pressed { background-color: #166534; }")
         .arg(accent));
+    m_newChatButton->setText("New Chat");
+    m_newChatButton->setIcon(makeLineIcon(AppIconGlyph::NewChat, 24, QColor("#ffffff")));
+    m_newChatButton->setIconSize(QSize(18, 18));
     sidebarLayout->addWidget(m_newChatButton);
 
     m_searchField = new QLineEdit(m_sidebar);
     m_searchField->setPlaceholderText("Search chats");
+    m_searchField->addAction(makeLineIcon(AppIconGlyph::Search), QLineEdit::LeadingPosition);
     m_searchField->setStyleSheet(QString(
         "QLineEdit { background-color: %1; color: %2; border: 1px solid %3; border-radius: 10px; "
         "padding: 9px 12px; font-size: 13px; } "
@@ -1127,6 +1563,7 @@ void MainWindow::setupUI()
 
     m_splitter = new QSplitter(Qt::Horizontal, this);
     m_splitter->setHandleWidth(1);
+    m_splitter->setChildrenCollapsible(false);
     m_splitter->addWidget(m_sidebar);
 
     QWidget *mainPanel = new QWidget(this);
@@ -1241,7 +1678,7 @@ void MainWindow::setupUI()
     connect(m_searchBar, &ChatSearchBar::searchTextChanged, this, &MainWindow::onSearchTextChanged);
     connect(m_searchBar, &ChatSearchBar::findNext, this, &MainWindow::onFindNext);
     connect(m_searchBar, &ChatSearchBar::findPrevious, this, &MainWindow::onFindPrevious);
-    connect(m_searchBar, &ChatSearchBar::closed, this, &MainWindow::clearHighlights);
+    connect(m_searchBar, &ChatSearchBar::closed, this, &MainWindow::hideSearchBar);
     m_searchBar->setStyleSheet(QString(
         "QFrame { background-color: %1; border: 1px solid %2; border-radius: 14px; padding: 6px; } "
         "QLineEdit { background-color: #101418; color: %3; border: 1px solid %2; border-radius: 8px; padding: 6px 8px; font-size: 13px; } "
@@ -1295,8 +1732,38 @@ void MainWindow::setupUI()
     m_chatLayout->addStretch();
 
     m_scrollArea->setWidget(m_chatContainer);
-    connect(m_scrollArea->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
+    connect(m_scrollArea->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int) {
         saveCurrentChatScrollPosition();
+    });
+    // Only user actions change follow intent; animation and layout changes do not.
+    connect(m_scrollArea->verticalScrollBar(), &QScrollBar::actionTriggered, this, [this](int action) {
+        QScrollBar *bar = m_scrollArea->verticalScrollBar();
+        const bool movingUp = action == QAbstractSlider::SliderSingleStepSub ||
+            action == QAbstractSlider::SliderPageStepSub ||
+            action == QAbstractSlider::SliderToMinimum || bar->sliderPosition() < bar->value();
+        m_stickToBottom = !movingUp && bar->maximum() - bar->sliderPosition() <= 48;
+        if (!m_stickToBottom) m_scrollFollowTimer->stop();
+        else scrollToBottom(false);
+    });
+    connect(m_scrollArea->verticalScrollBar(), &QScrollBar::sliderPressed, this, [this]() {
+        m_stickToBottom = false;
+        m_scrollFollowTimer->stop();
+    });
+    connect(m_scrollArea->verticalScrollBar(), &QScrollBar::sliderReleased, this, [this]() {
+        QScrollBar *bar = m_scrollArea->verticalScrollBar();
+        m_stickToBottom = bar->maximum() - bar->sliderPosition() <= 48;
+        scrollToBottom(false);
+    });
+    // Re-stick to the bottom whenever the content grows after layout settles.
+    // Scrolling to maximum() directly from a chunk handler races with the
+    // deferred word-wrap relayout and makes the view jump back and forth.
+    connect(m_scrollArea->verticalScrollBar(), &QScrollBar::rangeChanged, this, [this](int, int max) {
+        Q_UNUSED(max);
+        if (m_autoScroll && m_stickToBottom &&
+            !m_scrollArea->verticalScrollBar()->isSliderDown() &&
+            !m_scrollFollowTimer->isActive()) {
+            m_scrollFollowTimer->start();
+        }
     });
     mainLayout->addWidget(m_scrollArea, 1);
 
@@ -1360,8 +1827,9 @@ void MainWindow::setupUI()
     mainLayout->addWidget(inputFrame);
 
     m_splitter->addWidget(mainPanel);
+    m_splitter->setStretchFactor(0, 0);
     m_splitter->setStretchFactor(1, 1);
-    m_splitter->setSizes({290, 930});
+    m_splitter->setSizes({300, 900});
 
     setCentralWidget(m_splitter);
 
@@ -1380,6 +1848,9 @@ void MainWindow::setupUI()
 
     m_statusBar->addWidget(m_statusConnection, 1);
     m_statusBar->addPermanentWidget(m_statusSpeed);
+    m_statusBar->addPermanentWidget(m_statusDuration);
+    m_statusBar->addPermanentWidget(m_statusContextUsage);
+    m_statusBar->addPermanentWidget(m_statusTokens);
     m_statusBar->addPermanentWidget(m_statusResponseTime);
     m_statusBar->addPermanentWidget(m_statusModel);
 
@@ -1390,45 +1861,72 @@ void MainWindow::setupUI()
 void MainWindow::setupMenu()
 {
     QMenuBar *menuBar = this->menuBar();
-    QMenu *fileMenu = menuBar->addMenu("File");
-    QAction *settingsAction = fileMenu->addAction("Settings");
+    QMenu *fileMenu = menuBar->addMenu(makeLineIcon(AppIconGlyph::File), "File");
+
+    QAction *newChatAction = fileMenu->addAction(makeLineIcon(AppIconGlyph::NewChat), "New Chat");
+    newChatAction->setShortcut(QKeySequence("Ctrl+N"));
+    connect(newChatAction, &QAction::triggered, this, &MainWindow::onNewChat);
+
+    QAction *settingsAction = fileMenu->addAction(makeLineIcon(AppIconGlyph::Settings), "Settings");
+    settingsAction->setShortcut(QKeySequence("Ctrl+,"));
     connect(settingsAction, &QAction::triggered, this, &MainWindow::onSettings);
 
-    QAction *profilesAction = fileMenu->addAction("Manage Profiles...");
+    QAction *profilesAction = fileMenu->addAction(makeLineIcon(AppIconGlyph::Profiles), "Manage Profiles...");
     connect(profilesAction, &QAction::triggered, this, &MainWindow::onManageProfiles);
 
-    QAction *clearAction = fileMenu->addAction("Clear Current Chat");
+    fileMenu->addSeparator();
+
+    QAction *clearAction = fileMenu->addAction(makeLineIcon(AppIconGlyph::ClearChat), "Clear Current Chat");
     connect(clearAction, &QAction::triggered, [this]() {
-        if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
-            m_chatSessions[m_currentChatIndex].messages.clear();
-            m_chatSessions[m_currentChatIndex].messageCount = 0;
-            clearChatDisplay();
-            saveChatSessions();
+        if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) {
+            return;
         }
+        m_apiClient->cancelCurrentRequest();
+        m_chatSessions[m_currentChatIndex].messages.clear();
+        m_chatSessions[m_currentChatIndex].messageCount = 0;
+        m_currentChatImage.clear();
+        if (m_imagePreview) {
+            m_imagePreview->clear();
+            m_imagePreview->setVisible(false);
+        }
+        clearChatDisplay();
+        saveChatSessions();
+        showWelcomeScreen();
     });
 
-    QAction *exportAction = fileMenu->addAction("Export Chat...");
+    QAction *deleteAction = fileMenu->addAction(makeLineIcon(AppIconGlyph::Trash), "Delete Current Chat");
+    connect(deleteAction, &QAction::triggered, this, &MainWindow::onDeleteChat);
+
+    QAction *exportAction = fileMenu->addAction(makeLineIcon(AppIconGlyph::Export), "Export Chat...");
     exportAction->setShortcut(QKeySequence("Ctrl+E"));
     connect(exportAction, &QAction::triggered, this, &MainWindow::onExportChat);
 
-    QAction *themeAction = fileMenu->addAction("Toggle Theme");
+    QAction *recoverAction = fileMenu->addAction(makeLineIcon(AppIconGlyph::Refresh), "Recover Lost Chats...");
+    connect(recoverAction, &QAction::triggered, this, &MainWindow::onRecoverChats);
+
+    QAction *backupExportAction = fileMenu->addAction(makeLineIcon(AppIconGlyph::Save), "Export Backup Snapshot...");
+    connect(backupExportAction, &QAction::triggered, this, &MainWindow::onExportBackupSnapshot);
+
+    fileMenu->addSeparator();
+
+    QAction *themeAction = fileMenu->addAction(makeLineIcon(AppIconGlyph::Theme), "Toggle Theme");
     themeAction->setShortcut(QKeySequence("Ctrl+T"));
     connect(themeAction, &QAction::triggered, this, &MainWindow::onToggleTheme);
 
-    QAction *advancedAction = fileMenu->addAction("Advanced Settings...");
+    QAction *advancedAction = fileMenu->addAction(makeLineIcon(AppIconGlyph::Advanced), "Advanced Settings...");
     advancedAction->setShortcut(QKeySequence("Ctrl+Shift+S"));
     connect(advancedAction, &QAction::triggered, this, &MainWindow::onAdvancedSettings);
 
     fileMenu->addSeparator();
 
-    QAction *quitAction = fileMenu->addAction("Quit");
+    QAction *quitAction = fileMenu->addAction(makeLineIcon(AppIconGlyph::Quit), "Quit");
     quitAction->setShortcut(QKeySequence("Ctrl+Q"));
     connect(quitAction, &QAction::triggered, this, &QMainWindow::close);
 }
 
 void MainWindow::loadSettings()
 {
-    QString apiKey = m_settings.value("apiKey").toString();
+    QString apiKey = CredentialStore::unprotect(m_settings.value("apiKey").toString());
 
     m_apiClient->setApiKey(apiKey);
     restoreModelSelection();
@@ -1444,25 +1942,66 @@ void MainWindow::loadSettings()
 
     bool webSearch = m_settings.value("webSearch", false).toBool();
     m_apiClient->setWebSearch(webSearch);
+
+    m_chatFontSize = qBound(10, m_settings.value("chatFontSize", 15).toInt(), 30);
+}
+
+int MainWindow::chatIndexForId(const QString &id) const
+{
+    if (id.isEmpty()) {
+        return -1;
+    }
+
+    for (int i = 0; i < m_chatSessions.size(); ++i) {
+        if (m_chatSessions[i].id == id) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+void MainWindow::restoreLastChatSelection()
+{
+    if (m_chatSessions.isEmpty()) {
+        createNewChat();
+        return;
+    }
+
+    const QString lastChatId = m_settings.value("lastChatId").toString();
+    int index = chatIndexForId(lastChatId);
+    if (index < 0) {
+        index = 0;
+    }
+
+    switchToChat(index);
+    updateChatList();
 }
 
 void MainWindow::fetchModels()
 {
     if (!checkApiKey()) return;
-    m_modelCombo->clear();
-    m_modelCombo->addItem("Loading models...");
+    // Block combo signals while swapping in the placeholder: clear()/addItem()
+    // would otherwise emit currentTextChanged and have onModelChanged persist
+    // ""/"Loading models..." over the user's saved model selection.
+    {
+        QSignalBlocker blocker(m_modelCombo);
+        m_modelCombo->clear();
+        m_modelCombo->addItem("Loading models...");
+    }
     m_modelCombo->setEnabled(false);
     m_apiClient->fetchModels();
 }
 
 void MainWindow::saveSettings()
 {
+    m_settings.setValue("chatFontSize", m_chatFontSize);
     m_settings.sync();
 }
 
 bool MainWindow::checkApiKey()
 {
-    if (m_settings.value("apiKey").toString().isEmpty()) {
+    if (m_apiClient->apiKey().trimmed().isEmpty()) {
         QMessageBox::warning(this, "API Key Required", "Please set your Venice.ai API key in Settings.");
         return false;
     }
@@ -1490,31 +2029,51 @@ void MainWindow::createNewChat()
     updateCharCounter();
     updateChatList();
     saveChatSessions();
+    m_settings.setValue("lastChatId", newChat.id);
     updateHeaderState();
 }
 
-void MainWindow::switchToChat(int index)
+void MainWindow::switchToChat(int index, bool force)
 {
     if (index < 0 || index >= m_chatSessions.size()) return;
+    if (!force && index == m_currentChatIndex && m_chatSessions[index].messagesLoaded) return;
 
     const QString currentDraft = m_inputField->toPlainText().trimmed();
-    if (index != m_currentChatIndex && !currentDraft.isEmpty()) {
+    const bool discardDraft = index != m_currentChatIndex && !currentDraft.isEmpty();
+    if (discardDraft) {
         QMessageBox::StandardButton result = QMessageBox::question(this, "Unsaved Draft",
             "You have an unsaved draft. Discard it?",
             QMessageBox::Discard | QMessageBox::Cancel);
         if (result == QMessageBox::Cancel) return;
     }
 
-    saveDraft();
+    if (discardDraft) {
+        clearDraft();
+        m_inputField->clear();
+    } else {
+        saveDraft();
+    }
+    // A pending attachment belongs to the chat it was added in.
+    m_currentChatImage.clear();
+    if (m_imagePreview) {
+        m_imagePreview->clear();
+        m_imagePreview->setVisible(false);
+    }
     saveCurrentChatScrollPosition();
-    if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size() && m_currentChatIndex != index) {
+    if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size() &&
+        m_currentChatIndex != index && m_chatSessions[m_currentChatIndex].messagesLoaded) {
         saveChatMessages(m_currentChatIndex);
-        unloadChatMessages(m_currentChatIndex);
+        // The chat the in-flight request belongs to must stay loaded, otherwise
+        // its messages list is cleared and the answer has nowhere to land.
+        if (m_currentChatIndex != m_requestChatIndex) {
+            unloadChatMessages(m_currentChatIndex);
+        }
     }
 
     m_currentChatIndex = index;
     loadChatMessages(index);
     rebuildCurrentChatView();
+    m_settings.setValue("lastChatId", m_chatSessions[index].id);
 
     loadDraft();
     updateHeaderState();
@@ -1536,7 +2095,10 @@ void MainWindow::filterChats(const QString &query)
     while (layout->count() > 0) {
         item = layout->takeAt(0);
         if (item->widget()) {
-            delete item->widget();
+            // The list can be rebuilt from a widget's own context-menu
+            // callback.  Deleting that widget synchronously would destroy
+            // the sender while Qt is still dispatching its event.
+            item->widget()->deleteLater();
         }
         delete item;
     }
@@ -1616,13 +2178,13 @@ void MainWindow::continueChatListRender(int generation)
         }, Qt::QueuedConnection);
         connect(chatItem, &ChatListItem::deleteClicked, this, [this, idx]() {
             deleteChatAtRow(idx);
-        });
+        }, Qt::QueuedConnection);
         connect(chatItem, &ChatListItem::renameRequested, this, [this, idx]() {
             renameChat(idx);
-        });
+        }, Qt::QueuedConnection);
         connect(chatItem, &ChatListItem::pinRequested, this, [this, idx]() {
             togglePinChat(idx);
-        });
+        }, Qt::QueuedConnection);
 
         ++rendered;
         if (timer.elapsed() >= 8) {
@@ -1635,6 +2197,204 @@ void MainWindow::continueChatListRender(int generation)
             continueChatListRender(generation);
         });
     }
+}
+
+QString MainWindow::chatBackupFilePath() const
+{
+    QString baseDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (baseDir.isEmpty()) {
+        baseDir = QDir::homePath() + "/.simpleaiclient";
+    }
+    return QDir(baseDir).filePath("backups/chat-backup.json");
+}
+
+QJsonObject MainWindow::buildChatBackupSnapshot() const
+{
+    QJsonArray sessionsArray;
+
+    for (int i = 0; i < m_chatSessions.size(); ++i) {
+        const ChatSession &chat = m_chatSessions[i];
+        QJsonArray messagesArray;
+
+        if (chat.messagesLoaded) {
+            for (const auto &msg : chat.messages) {
+                QJsonObject msgObj;
+                msgObj["role"] = msg.role;
+                msgObj["content"] = msg.content;
+                msgObj["promptTokens"] = msg.promptTokens;
+                msgObj["completionTokens"] = msg.completionTokens;
+                msgObj["totalTokens"] = msg.totalTokens;
+                msgObj["imageUrl"] = msg.imageUrl;
+                messagesArray.append(msgObj);
+            }
+        } else {
+            QString data = m_settings.value(QString("chatMessages/%1").arg(chat.id)).toString();
+            if (!data.isEmpty()) {
+                QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8());
+                if (doc.isArray()) {
+                    messagesArray = doc.array();
+                }
+            }
+        }
+
+        QJsonObject sessionObj;
+        sessionObj["id"] = chat.id;
+        sessionObj["title"] = chat.title;
+        sessionObj["pinned"] = chat.pinned;
+        sessionObj["scrollPosition"] = chat.scrollPosition;
+        sessionObj["messageCount"] = messagesArray.size();
+        sessionObj["messages"] = messagesArray;
+        sessionsArray.append(sessionObj);
+    }
+
+    QJsonObject snapshot;
+    snapshot["version"] = 1;
+    snapshot["savedAt"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+    snapshot["currentChatId"] = (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size())
+        ? m_chatSessions[m_currentChatIndex].id
+        : QString();
+    snapshot["sessions"] = sessionsArray;
+    return snapshot;
+}
+
+bool MainWindow::loadChatBackupSnapshot(QJsonObject *snapshot) const
+{
+    if (!snapshot) {
+        return false;
+    }
+
+    QFile file(chatBackupFilePath());
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return false;
+    }
+
+    const QByteArray raw = file.readAll();
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(raw, &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+        return false;
+    }
+
+    *snapshot = doc.object();
+    return true;
+}
+
+bool MainWindow::saveChatBackup()
+{
+    QJsonObject snapshot = buildChatBackupSnapshot();
+    QJsonDocument doc(snapshot);
+
+    const QString path = chatBackupFilePath();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        return false;
+    }
+
+    file.write(doc.toJson(QJsonDocument::Indented));
+    if (!file.commit()) {
+        return false;
+    }
+
+    return true;
+}
+
+QList<int> MainWindow::recoverableChatIndices() const
+{
+    QList<int> indices;
+
+    QJsonObject snapshot;
+    if (!loadChatBackupSnapshot(&snapshot)) {
+        return indices;
+    }
+
+    QMap<QString, int> backupMessageCounts;
+    QJsonArray sessionsArray = snapshot["sessions"].toArray();
+    for (const auto &val : sessionsArray) {
+        QJsonObject sessionObj = val.toObject();
+        const QString id = sessionObj["id"].toString();
+        const int messageCount = sessionObj["messageCount"].toInt();
+        if (!id.isEmpty() && messageCount > 0) {
+            backupMessageCounts[id] = messageCount;
+        }
+    }
+
+    for (int i = 0; i < m_chatSessions.size(); ++i) {
+        const ChatSession &chat = m_chatSessions[i];
+        if (chat.messageCount > 0) {
+            continue;
+        }
+        if (backupMessageCounts.contains(chat.id)) {
+            indices.append(i);
+        }
+    }
+
+    return indices;
+}
+
+bool MainWindow::restoreChatFromBackup(const QString &chatId)
+{
+    if (chatId.isEmpty()) {
+        return false;
+    }
+
+    QJsonObject snapshot;
+    if (!loadChatBackupSnapshot(&snapshot)) {
+        return false;
+    }
+
+    QJsonArray sessionsArray = snapshot["sessions"].toArray();
+    QJsonArray messagesArray;
+    QString title;
+    int scrollPosition = 0;
+    bool pinned = false;
+    bool found = false;
+
+    for (const auto &val : sessionsArray) {
+        QJsonObject sessionObj = val.toObject();
+        if (sessionObj["id"].toString() != chatId) {
+            continue;
+        }
+
+        messagesArray = sessionObj["messages"].toArray();
+        title = sessionObj["title"].toString();
+        scrollPosition = sessionObj["scrollPosition"].toInt();
+        pinned = sessionObj["pinned"].toBool();
+        found = true;
+        break;
+    }
+
+    if (!found || messagesArray.isEmpty()) {
+        return false;
+    }
+
+    const QString messagesKey = QString("chatMessages/%1").arg(chatId);
+    m_settings.setValue(messagesKey, QString::fromUtf8(QJsonDocument(messagesArray).toJson(QJsonDocument::Compact)));
+
+    for (int i = 0; i < m_chatSessions.size(); ++i) {
+        if (m_chatSessions[i].id != chatId) {
+            continue;
+        }
+
+        m_chatSessions[i].title = title.isEmpty() ? m_chatSessions[i].title : title;
+        m_chatSessions[i].pinned = pinned;
+        m_chatSessions[i].scrollPosition = scrollPosition;
+        m_chatSessions[i].messageCount = messagesArray.size();
+        m_chatSessions[i].messagesLoaded = false;
+        if (i == m_currentChatIndex) {
+            loadChatMessages(i);
+            rebuildCurrentChatView();
+            updateHeaderState();
+            updateContextUsage();
+            updateChatDuration();
+        }
+        break;
+    }
+
+    saveChatSessions();
+    updateChatList();
+    return true;
 }
 
 void MainWindow::saveChatSessions()
@@ -1658,6 +2418,16 @@ void MainWindow::saveChatSessions()
 
     QJsonDocument doc(sessionsArray);
     m_settings.setValue("chatSessions", QString::fromUtf8(doc.toJson(QJsonDocument::Compact)));
+
+    // The backup re-serialises every chat, so coalesce the writes that a single
+    // turn produces (send + finish, plus a retry) into one.
+    if (!m_backupTimer) {
+        m_backupTimer = new QTimer(this);
+        m_backupTimer->setSingleShot(true);
+        m_backupTimer->setInterval(400);
+        connect(m_backupTimer, &QTimer::timeout, this, [this]() { saveChatBackup(); });
+    }
+    m_backupTimer->start();
 }
 
 void MainWindow::loadChatSessions()
@@ -1808,12 +2578,19 @@ void MainWindow::rebuildCurrentChatView()
 
     ++m_chatRenderGeneration;
     const int renderGeneration = m_chatRenderGeneration;
+    m_scrollFollowTimer->stop();
+    m_stickToBottom = false;
+
+    // Suppress intermediate repaints/relayouts while the batched render
+    // reconstructs the message cards; everything is painted once at the end.
+    m_chatContainer->setUpdatesEnabled(false);
 
     clearChatDisplay(false);
 
     if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) {
         showWelcomeScreen();
         refreshChatViewport();
+        m_chatContainer->setUpdatesEnabled(true);
         return;
     }
 
@@ -1821,6 +2598,7 @@ void MainWindow::rebuildCurrentChatView()
     if (chat.messages.isEmpty()) {
         showWelcomeScreen();
         refreshChatViewport();
+        m_chatContainer->setUpdatesEnabled(true);
     } else {
         hideWelcomeScreen();
         m_chatRenderCursor = chat.messages.size() - 1;
@@ -1830,6 +2608,18 @@ void MainWindow::rebuildCurrentChatView()
 
 void MainWindow::clearChatDisplay(bool refresh)
 {
+    m_thinkingTimer->stop();
+
+    // Every card below is destroyed, so any pointer still cached for search
+    // navigation would dangle.
+    m_highlightedCards.clear();
+    m_currentHighlightIndex = -1;
+
+    // Invalidate a pending batched history render: the caller re-adds cards
+    // itself, so resuming the old cursor would duplicate them.
+    ++m_chatRenderGeneration;
+    m_chatRenderCursor = -1;
+
     QLayoutItem *item;
     while ((item = m_chatLayout->takeAt(0)) != nullptr) {
         if (item->widget() && item->widget() != m_welcomeWidget) {
@@ -1861,6 +2651,7 @@ ChatMessageCard* MainWindow::addMessageCardWithCard(const QString &role, const Q
     ChatMessageCard *card = new ChatMessageCard(role, content, m_chatContainer);
     card->setTimestamp(QDateTime::currentDateTime());
     card->showCopyButton(true);
+    card->setContentFontSize(m_chatFontSize);
 
     int msgIndex = -1;
     if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
@@ -1894,23 +2685,26 @@ ChatMessageCard* MainWindow::addMessageCardWithCard(const QString &role, const Q
 void MainWindow::continueChatHistoryRender(int generation)
 {
     if (generation != m_chatRenderGeneration) {
+        // A newer render owns the updates-disabled window; it will re-enable.
         return;
     }
 
     if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) {
+        m_chatContainer->setUpdatesEnabled(true);
         return;
     }
 
     const auto &chat = m_chatSessions[m_currentChatIndex];
     if (chat.messages.isEmpty()) {
+        m_chatContainer->setUpdatesEnabled(true);
         return;
     }
 
     const bool firstChunk = (m_chatRenderCursor == chat.messages.size() - 1);
-    constexpr int kFirstBatchSize = 3;
-    constexpr int kLaterBatchSize = 8;
-    constexpr int kFirstChunkBudgetMs = 6;
-    constexpr int kLaterChunkBudgetMs = 12;
+    constexpr int kFirstBatchSize = 8;
+    constexpr int kLaterBatchSize = 24;
+    constexpr int kFirstChunkBudgetMs = 12;
+    constexpr int kLaterChunkBudgetMs = 24;
     const int maxCards = firstChunk ? kFirstBatchSize : kLaterBatchSize;
     const int maxBudgetMs = firstChunk ? kFirstChunkBudgetMs : kLaterChunkBudgetMs;
     QElapsedTimer timer;
@@ -1943,13 +2737,15 @@ void MainWindow::continueChatHistoryRender(int generation)
         }
     }
 
-    refreshChatViewport();
-
     if (m_chatRenderCursor >= 0) {
+        // No intermediate refreshChatViewport(): with updates disabled it
+        // would only burn O(n) layout work per batch (O(n^2) overall).
         QTimer::singleShot(0, this, [this, generation]() {
             continueChatHistoryRender(generation);
         });
     } else {
+        m_chatContainer->setUpdatesEnabled(true);
+        refreshChatViewport();
         restoreCurrentChatScrollPosition();
     }
 }
@@ -1972,13 +2768,18 @@ void MainWindow::restoreCurrentChatScrollPosition()
     }
 
     const int savedPosition = m_chatSessions[m_currentChatIndex].scrollPosition;
-    QTimer::singleShot(0, this, [this, savedPosition]() {
-        if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size() || !m_scrollArea) {
+    const int renderGeneration = m_chatRenderGeneration;
+    m_scrollFollowTimer->stop();
+    m_stickToBottom = false;
+    QTimer::singleShot(0, this, [this, savedPosition, renderGeneration]() {
+        if (renderGeneration != m_chatRenderGeneration ||
+            m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size() || !m_scrollArea) {
             return;
         }
 
         if (QScrollBar *bar = m_scrollArea->verticalScrollBar()) {
             bar->setValue(qBound(0, savedPosition, bar->maximum()));
+            m_stickToBottom = isNearBottom();
         }
     });
 }
@@ -2033,26 +2834,17 @@ bool MainWindow::isNearBottom(int tolerance) const
 void MainWindow::scrollToBottom(bool force)
 {
     if (!m_autoScroll) return;
-    if (force) {
-        m_scrollToBottomForcePending = true;
-    } else if (!isNearBottom()) {
-        return;
-    }
+    if (!force && !m_stickToBottom) return;
 
-    if (m_scrollToBottomQueued) return;
-    m_scrollToBottomQueued = true;
-
-    QTimer::singleShot(0, this, [this]() {
-        bool forceScroll = m_scrollToBottomForcePending;
-        m_scrollToBottomQueued = false;
-        m_scrollToBottomForcePending = false;
-        if (!m_autoScroll || !m_scrollArea) return;
-        if (!forceScroll && !isNearBottom()) return;
-        QScrollBar *bar = m_scrollArea->verticalScrollBar();
-        if (bar) {
-            bar->setValue(bar->maximum());
+    m_stickToBottom = true;
+    QScrollBar *bar = m_scrollArea ? m_scrollArea->verticalScrollBar() : nullptr;
+    if (bar) {
+        // Let word-wrap/layout settle and perform at most one movement per
+        // frame. rangeChanged will request another frame only if needed.
+        if (!m_scrollFollowTimer->isActive()) {
+            m_scrollFollowTimer->start();
         }
-    });
+    }
 }
 
 void MainWindow::showWelcomeScreen(bool refresh)
@@ -2117,22 +2909,14 @@ void MainWindow::showThinkingIndicator()
     m_thinkingDots = 0;
     m_thinkingIndicator->setText("Thinking");
     m_thinkingTimer->start(500);
-    connect(m_thinkingTimer, &QTimer::timeout, [this]() {
-        m_thinkingDots = (m_thinkingDots + 1) % 4;
-        QString dots;
-        for (int i = 0; i < m_thinkingDots; ++i) dots += ".";
-        m_thinkingIndicator->setText("Thinking" + dots);
-    });
 
     scrollToBottom();
 }
 
 void MainWindow::hideThinkingIndicator(bool refresh)
 {
-    if (!m_thinkingIndicator) return;
-
     m_thinkingTimer->stop();
-    disconnect(m_thinkingTimer, nullptr, this, nullptr);
+    if (!m_thinkingIndicator) return;
 
     delete m_thinkingRowWidget;
     m_thinkingRowWidget = nullptr;
@@ -2188,6 +2972,55 @@ void MainWindow::onAttachImage()
     }
 }
 
+void MainWindow::beginRequest(int chatIndex)
+{
+    m_requestChatIndex = chatIndex;
+    m_streamedContent.clear();
+    m_pendingStreamChunk.clear();
+    m_retryCount = 0;
+    m_streamStartTime = QDateTime::currentMSecsSinceEpoch();
+    m_streamTokenCount = 0;
+
+    m_inputField->setEnabled(false);
+    setRequestInFlight(true);
+
+    if (chatIndex == m_currentChatIndex) {
+        showThinkingIndicator();
+    }
+
+    m_pendingMessages = m_chatSessions[chatIndex].messages;
+    m_apiClient->sendMessage(m_pendingMessages);
+}
+
+bool MainWindow::persistAssistantMessage(int chatIndex, const QString &content, int promptTokens, int completionTokens, int totalTokens)
+{
+    if (chatIndex < 0 || chatIndex >= m_chatSessions.size()) {
+        return false;
+    }
+    if (!m_chatSessions[chatIndex].messagesLoaded) {
+        return false;
+    }
+    m_chatSessions[chatIndex].messages.append({"assistant", content, promptTokens, completionTokens, totalTokens});
+    m_chatSessions[chatIndex].messageCount = m_chatSessions[chatIndex].messages.size();
+    return true;
+}
+
+void MainWindow::rebuildCardsForMessages(const QList<ChatMessage> &messages)
+{
+    clearChatDisplay();
+    for (int i = 0; i < messages.size(); ++i) {
+        const auto &msg = messages.at(i);
+        QString displayText = msg.content;
+        if (!msg.imageUrl.isEmpty()) {
+            displayText += "\n[Image attached]";
+        }
+        ChatMessageCard *card = addMessageCardWithCard(msg.role, displayText, msg.promptTokens, msg.completionTokens, msg.totalTokens);
+        if (card) {
+            card->setMessageIndex(i);
+        }
+    }
+}
+
 void MainWindow::onSendMessage()
 {
     if (m_requestInFlight) {
@@ -2199,8 +3032,11 @@ void MainWindow::onSendMessage()
     if (text.isEmpty() && m_currentChatImage.isEmpty()) return;
 
     if (text.startsWith("/")) {
-        handleQuickCommand(text);
-        m_inputField->clear();
+        if (handleQuickCommand(text)) {
+            m_inputField->clear();
+        } else {
+            m_inputField->setPlainText(text);
+        }
         return;
     }
 
@@ -2232,23 +3068,10 @@ void MainWindow::onSendMessage()
         m_chatSessions[m_currentChatIndex].title = generateChatTitle(text);
         updateChatList();
         updateHeaderState();
-    }
-
-    m_inputField->setEnabled(false);
-    setRequestInFlight(true);
-
-    m_retryCount = 0;
-    m_pendingMessages = m_chatSessions[m_currentChatIndex].messages;
-    showThinkingIndicator();
-
-    m_streamStartTime = QDateTime::currentMSecsSinceEpoch();
-    m_streamTokenCount = 0;
-
-    if (m_chatSessions[m_currentChatIndex].messages.size() == 1) {
         m_chatStartTime = QDateTime::currentDateTime();
     }
 
-    m_apiClient->sendMessage(m_chatSessions[m_currentChatIndex].messages);
+    beginRequest(m_currentChatIndex);
     saveChatSessions();
 
     if (m_statusConnection) {
@@ -2267,12 +3090,23 @@ void MainWindow::onResponseReceived(const QString &response, int promptTokens, i
         delete m_streamingCard;
         m_streamingCard = nullptr;
     }
+    m_streamRenderTimer->stop();
+    m_pendingStreamChunk.clear();
+    m_streamedContent = response;
 
-    addMessageCard("assistant", response, promptTokens, completionTokens, totalTokens, responseTimeMs);
+    const int requestChat = m_requestChatIndex;
+    const bool shownInCurrentChat = requestChat == m_currentChatIndex;
 
-    ChatMessage assistantMsg{"assistant", response, promptTokens, completionTokens, totalTokens};
-    m_chatSessions[m_currentChatIndex].messages.append(assistantMsg);
-    m_chatSessions[m_currentChatIndex].messageCount = m_chatSessions[m_currentChatIndex].messages.size();
+    if (shownInCurrentChat) {
+        addMessageCard("assistant", response, promptTokens, completionTokens, totalTokens, responseTimeMs);
+    }
+
+    if (persistAssistantMessage(requestChat, response, promptTokens, completionTokens, totalTokens)) {
+        saveChatSessions();
+        if (shownInCurrentChat) {
+            updateContextUsage();
+        }
+    }
 
     if (m_statusConnection) {
         m_statusConnection->setText("Ready");
@@ -2297,22 +3131,30 @@ void MainWindow::onResponseReceived(const QString &response, int promptTokens, i
 
 void MainWindow::onResponseChunk(const QString &chunk)
 {
-    if (m_thinkingIndicator) {
-        hideThinkingIndicator(false);
-        removeTrailingSpacer();
-        m_streamingCard = new ChatMessageCard("assistant", "", m_chatContainer);
-        m_streamingCard->setStreaming(true);
-        m_chatLayout->addWidget(m_streamingCard);
-        appendBottomSpacer();
-        refreshChatViewport();
-    }
+    m_streamedContent += chunk;
+    m_pendingStreamChunk += chunk;
 
-    if (m_streamingCard && !chunk.isEmpty()) {
-        m_pendingStreamChunk += chunk;
-        if (!m_streamRenderTimer->isActive()) {
+    // The view can be rebuilt mid-stream (chat switch, regenerate): rebuild the
+    // live card from the full text received so far instead of losing the part
+    // that was rendered into the destroyed card.
+    if (m_requestChatIndex == m_currentChatIndex) {
+        if (!m_streamingCard) {
+            hideThinkingIndicator(false);
+            removeTrailingSpacer();
+            m_streamingCard = new ChatMessageCard("assistant", m_streamedContent, m_chatContainer);
+            m_streamingCard->setContentFontSize(m_chatFontSize);
+            m_streamingCard->setStreaming(true);
+            m_chatLayout->addWidget(m_streamingCard);
+            appendBottomSpacer();
+            // The card was seeded with everything received so far.
+            m_pendingStreamChunk.clear();
+            refreshChatViewport();
+        }
+        if (!chunk.isEmpty() && !m_streamRenderTimer->isActive()) {
             m_streamRenderTimer->start();
         }
     }
+
     if (m_statusConnection) {
         m_statusConnection->setText("Streaming...");
     }
@@ -2324,17 +3166,19 @@ void MainWindow::onResponseFinished(int responseTimeMs)
     flushStreamingChunks();
     m_streamRenderTimer->stop();
 
+    const int requestChat = m_requestChatIndex;
+    const bool shownInCurrentChat = requestChat == m_currentChatIndex;
+
     if (m_streamingCard) {
         m_streamingCard->setStreaming(false);
         m_streamingCard->showCopyButton(true);
+    }
 
-        QString fullContent = m_streamingCard->content();
-        ChatMessage assistantMsg{"assistant", fullContent, 0, 0, 0};
-        m_chatSessions[m_currentChatIndex].messages.append(assistantMsg);
-        m_chatSessions[m_currentChatIndex].messageCount = m_chatSessions[m_currentChatIndex].messages.size();
+    if (persistAssistantMessage(requestChat, m_streamedContent, 0, 0, 0)) {
         saveChatSessions();
-
-        updateContextUsage();
+        if (shownInCurrentChat) {
+            updateContextUsage();
+        }
     }
 
     if (m_statusConnection) {
@@ -2347,13 +3191,15 @@ void MainWindow::onResponseFinished(int responseTimeMs)
     m_inputField->setEnabled(true);
     m_inputField->setFocus();
     setRequestInFlight(false);
-    m_streamingCard = nullptr;
     m_retryCount = 0;
     m_pendingMessages.clear();
 
     if (m_statusSpeed) m_statusSpeed->clear();
     m_streamTokenCount = 0;
+    m_requestChatIndex = -1;
     m_pendingStreamChunk.clear();
+    m_streamedContent.clear();
+    m_streamingCard = nullptr;
 
     updateChatDuration();
     playNotificationSound();
@@ -2367,6 +3213,12 @@ void MainWindow::onErrorOccurred(const QString &error)
 
     m_retryCount = 0;
     m_pendingMessages.clear();
+
+    // Drop the partial render: keeping it would prepend this attempt's tail to
+    // the next response.
+    m_streamRenderTimer->stop();
+    m_pendingStreamChunk.clear();
+    m_streamedContent.clear();
 
     if (m_streamingCard) {
         m_chatLayout->removeWidget(m_streamingCard);
@@ -2383,33 +3235,40 @@ void MainWindow::onErrorOccurred(const QString &error)
     m_inputField->setEnabled(true);
     m_inputField->setFocus();
     setRequestInFlight(false);
+    m_requestChatIndex = -1;
 }
 
 void MainWindow::onRequestCancelled()
 {
     hideThinkingIndicator();
+    m_retryTimer->stop();
     flushStreamingChunks();
     m_streamRenderTimer->stop();
+
+    const int requestChat = m_requestChatIndex;
+    const bool shownInCurrentChat = requestChat == m_currentChatIndex;
+    const QString partialContent = m_streamedContent;
 
     if (m_streamingCard) {
         m_streamingCard->setStreaming(false);
         m_streamingCard->showCopyButton(true);
+    }
 
-        const QString partialContent = m_streamingCard->content();
-        if (!partialContent.trimmed().isEmpty() && m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
-            ChatMessage assistantMsg{"assistant", partialContent, 0, 0, 0};
-            m_chatSessions[m_currentChatIndex].messages.append(assistantMsg);
-            m_chatSessions[m_currentChatIndex].messageCount = m_chatSessions[m_currentChatIndex].messages.size();
-            saveChatSessions();
+    const bool keepPartial = !partialContent.trimmed().isEmpty();
+    if (keepPartial && persistAssistantMessage(requestChat, partialContent, 0, 0, 0)) {
+        saveChatSessions();
+        if (shownInCurrentChat) {
             updateContextUsage();
-        } else {
-            m_chatLayout->removeWidget(m_streamingCard);
-            delete m_streamingCard;
         }
+    } else if (m_streamingCard) {
+        m_chatLayout->removeWidget(m_streamingCard);
+        delete m_streamingCard;
     }
 
     m_streamingCard = nullptr;
     m_pendingStreamChunk.clear();
+    m_streamedContent.clear();
+    m_requestChatIndex = -1;
     m_retryCount = 0;
     m_pendingMessages.clear();
     m_streamTokenCount = 0;
@@ -2425,10 +3284,13 @@ void MainWindow::onRequestCancelled()
 
 void MainWindow::onSettings()
 {
+    const QString currentKey = CredentialStore::unprotect(m_settings.value("apiKey").toString());
+
     bool ok;
-    QString apiKey = QInputDialog::getText(this, "Settings", "Venice.ai API Key:", QLineEdit::Normal, m_settings.value("apiKey").toString(), &ok);
+    QString apiKey = QInputDialog::getText(this, "Settings", "Venice.ai API Key:",
+                                           QLineEdit::Password, currentKey, &ok);
     if (ok) {
-        m_settings.setValue("apiKey", apiKey);
+        m_settings.setValue("apiKey", CredentialStore::protect(apiKey));
         m_apiClient->setApiKey(apiKey);
         fetchModels();
     }
@@ -2452,13 +3314,8 @@ void MainWindow::onExportChat()
     QString filePath = QFileDialog::getSaveFileName(this, "Export Chat", defaultName + ".md", "Markdown Files (*.md);;Text Files (*.txt);;All Files (*)");
     if (filePath.isEmpty()) return;
 
-    QFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, "Export Failed", "Could not save file: " + filePath);
-        return;
-    }
-
-    QTextStream out(&file);
+    QString markdown;
+    QTextStream out(&markdown);
 
     out << "# " << chat.title << "\n\n";
     out << "Exported: " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n\n";
@@ -2467,15 +3324,191 @@ void MainWindow::onExportChat()
     for (const auto &msg : chat.messages) {
         QString role = msg.role == "user" ? "You" : "Assistant";
         out << "## " << role << "\n\n";
+        if (!msg.imageUrl.isEmpty()) {
+            out << "*[Image attached]*\n\n";
+        }
         out << msg.content << "\n\n";
         if (msg.totalTokens > 0) {
             out << "*Tokens: " << msg.promptTokens << " prompt, " << msg.completionTokens << " completion, " << msg.totalTokens << " total*\n\n";
         }
         out << "---\n\n";
     }
+    out.flush();
 
-    file.close();
+    // QSaveFile so a crash mid-export cannot leave a truncated transcript.
+    QSaveFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, "Export Failed", "Could not save file: " + filePath);
+        return;
+    }
+    file.write(markdown.toUtf8());
+    if (!file.commit()) {
+        QMessageBox::warning(this, "Export Failed", "Could not finalise file: " + filePath);
+        return;
+    }
     QMessageBox::information(this, "Export Complete", "Chat exported to:\n" + filePath);
+}
+
+void MainWindow::onRecoverChats()
+{
+    QJsonObject snapshot;
+    if (!loadChatBackupSnapshot(&snapshot)) {
+        QMessageBox::information(this, "Recover Lost Chats", "No backup snapshot was found yet.");
+        return;
+    }
+
+    QMap<QString, QJsonObject> backupById;
+    QJsonArray sessionsArray = snapshot["sessions"].toArray();
+    for (const auto &val : sessionsArray) {
+        QJsonObject sessionObj = val.toObject();
+        const QString id = sessionObj["id"].toString();
+        if (!id.isEmpty()) {
+            backupById[id] = sessionObj;
+        }
+    }
+
+    QList<int> candidates = recoverableChatIndices();
+    if (candidates.isEmpty()) {
+        QMessageBox::information(this, "Recover Lost Chats", "No recoverable chats were found in the backup.");
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Recover Lost Chats");
+    dialog.setMinimumSize(760, 420);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    QLabel *info = new QLabel(
+        "These chats are currently empty in the app, but a backup still has message data for them.\n"
+        "Select one or more rows and restore them back into the app.",
+        &dialog
+    );
+    info->setWordWrap(true);
+    layout->addWidget(info);
+
+    QTableWidget *table = new QTableWidget(&dialog);
+    table->setColumnCount(4);
+    table->setHorizontalHeaderLabels({"Title", "Current", "Backup", "Chat ID"});
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setRowCount(candidates.size());
+
+    for (int row = 0; row < candidates.size(); ++row) {
+        int index = candidates[row];
+        const ChatSession &chat = m_chatSessions[index];
+        const QJsonObject sessionObj = backupById.value(chat.id);
+        const int backupCount = sessionObj["messageCount"].toInt();
+
+        auto *titleItem = new QTableWidgetItem(chat.title.isEmpty() ? "(untitled)" : chat.title);
+        titleItem->setData(Qt::UserRole, chat.id);
+        table->setItem(row, 0, titleItem);
+        table->setItem(row, 1, new QTableWidgetItem(QString::number(chat.messageCount)));
+        table->setItem(row, 2, new QTableWidgetItem(QString::number(backupCount)));
+        table->setItem(row, 3, new QTableWidgetItem(chat.id));
+    }
+    layout->addWidget(table);
+
+    QDialogButtonBox *buttons = new QDialogButtonBox(&dialog);
+    QPushButton *restoreSelectedBtn = buttons->addButton("Restore Selected", QDialogButtonBox::AcceptRole);
+    QPushButton *restoreAllBtn = buttons->addButton("Restore All", QDialogButtonBox::ActionRole);
+    buttons->addButton(QDialogButtonBox::Close);
+    layout->addWidget(buttons);
+
+    auto restoreRows = [this, table, &dialog](const QList<int> &rows) {
+        int restored = 0;
+        int failed = 0;
+        for (int row : rows) {
+            QTableWidgetItem *item = table->item(row, 0);
+            if (!item) {
+                ++failed;
+                continue;
+            }
+            const QString chatId = item->data(Qt::UserRole).toString();
+            if (restoreChatFromBackup(chatId)) {
+                ++restored;
+            } else {
+                ++failed;
+            }
+        }
+
+        if (restored > 0) {
+            updateChatList();
+            if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
+                switchToChat(m_currentChatIndex);
+            }
+        }
+
+        QMessageBox::information(
+            &dialog,
+            "Recover Lost Chats",
+            QString("Restored %1 chat(s).%2")
+                .arg(restored)
+                .arg(failed > 0 ? QString("\n%1 chat(s) could not be restored.").arg(failed) : QString())
+        );
+    };
+
+    connect(restoreSelectedBtn, &QPushButton::clicked, &dialog, [&]() {
+        QList<int> rows;
+        for (const auto &range : table->selectedRanges()) {
+            for (int row = range.topRow(); row <= range.bottomRow(); ++row) {
+                rows.append(row);
+            }
+        }
+        if (rows.isEmpty()) {
+            QMessageBox::information(&dialog, "Recover Lost Chats", "Select one or more rows first.");
+            return;
+        }
+        restoreRows(rows);
+    });
+
+    connect(restoreAllBtn, &QPushButton::clicked, &dialog, [&]() {
+        QList<int> rows;
+        for (int row = 0; row < table->rowCount(); ++row) {
+            rows.append(row);
+        }
+        restoreRows(rows);
+    });
+
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+
+    dialog.exec();
+}
+
+void MainWindow::onExportBackupSnapshot()
+{
+    QString defaultName = QString("simpleaiclient-backup-%1.json")
+        .arg(QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss"));
+    QString filePath = QFileDialog::getSaveFileName(
+        this,
+        "Export Backup Snapshot",
+        defaultName,
+        "JSON Files (*.json);;All Files (*)"
+    );
+    if (filePath.isEmpty()) {
+        return;
+    }
+
+    QJsonDocument doc(buildChatBackupSnapshot());
+    QSaveFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, "Export Failed", "Could not save file: " + filePath);
+        return;
+    }
+
+    file.write(doc.toJson(QJsonDocument::Indented));
+    if (!file.commit()) {
+        QMessageBox::warning(this, "Export Failed", "Could not finalise file: " + filePath);
+        return;
+    }
+    QMessageBox::information(this, "Export Complete", "Backup snapshot exported to:\n" + filePath);
 }
 
 void MainWindow::onToggleTheme()
@@ -2485,35 +3518,31 @@ void MainWindow::onToggleTheme()
     applyTheme();
 }
 
-void MainWindow::onRegenerateResponse()
+void MainWindow::onRegenerateResponse(int messageIndex)
 {
+    if (m_requestInFlight) return;
     if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return;
 
     auto &messages = m_chatSessions[m_currentChatIndex].messages;
     if (messages.isEmpty()) return;
 
-    if (messages.last().role == "assistant") {
-        messages.removeLast();
-        m_chatSessions[m_currentChatIndex].messageCount = messages.size();
+    if (messageIndex >= 0 && messageIndex < messages.size()) {
+        // Regenerating an older answer drops that answer and everything after
+        // it, instead of always dropping the newest one.
+        messages = messages.mid(0, messageIndex);
+    } else {
+        // No usable index: fall back to dropping a trailing answer.
+        if (messages.last().role == "assistant") {
+            messages.removeLast();
+        }
     }
+    m_chatSessions[m_currentChatIndex].messageCount = messages.size();
 
     if (messages.isEmpty()) return;
 
-    clearChatDisplay();
-    for (const auto &msg : messages) {
-        QString displayText = msg.content;
-        if (!msg.imageUrl.isEmpty()) {
-            displayText += "\n[Image attached]";
-        }
-        addMessageCard(msg.role, displayText, msg.promptTokens, msg.completionTokens, msg.totalTokens);
-    }
-
-    m_sendButton->setEnabled(false);
-    m_inputField->setEnabled(false);
-
-    showThinkingIndicator();
-
-    m_apiClient->sendMessage(messages);
+    const QList<ChatMessage> requestMessages = messages;
+    rebuildCardsForMessages(requestMessages);
+    beginRequest(m_currentChatIndex);
     saveChatSessions();
 
     scrollToBottom();
@@ -2540,14 +3569,7 @@ void MainWindow::onBranchConversation(int messageIndex)
     m_chatSessions.prepend(newChat);
     m_currentChatIndex = 0;
 
-    clearChatDisplay();
-    for (const auto &msg : newChat.messages) {
-        QString displayText = msg.content;
-        if (!msg.imageUrl.isEmpty()) {
-            displayText += "\n[Image attached]";
-        }
-        addMessageCard(msg.role, displayText, msg.promptTokens, msg.completionTokens, msg.totalTokens);
-    }
+    rebuildCardsForMessages(newChat.messages);
 
     updateChatList();
     saveChatSessions();
@@ -2556,6 +3578,7 @@ void MainWindow::onBranchConversation(int messageIndex)
 
 void MainWindow::onEditMessage(int messageIndex, const QString &newContent)
 {
+    if (m_requestInFlight) return;
     if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return;
 
     auto &messages = m_chatSessions[m_currentChatIndex].messages;
@@ -2570,21 +3593,9 @@ void MainWindow::onEditMessage(int messageIndex, const QString &newContent)
     }
     m_chatSessions[m_currentChatIndex].messageCount = messages.size();
 
-    clearChatDisplay();
-    for (const auto &msg : messages) {
-        QString displayText = msg.content;
-        if (!msg.imageUrl.isEmpty()) {
-            displayText += "\n[Image attached]";
-        }
-        addMessageCard(msg.role, displayText, msg.promptTokens, msg.completionTokens, msg.totalTokens);
-    }
-
-    m_sendButton->setEnabled(false);
-    m_inputField->setEnabled(false);
-
-    showThinkingIndicator();
-
-    m_apiClient->sendMessage(messages);
+    const QList<ChatMessage> requestMessages = messages;
+    rebuildCardsForMessages(requestMessages);
+    beginRequest(m_currentChatIndex);
     saveChatSessions();
 
     scrollToBottom();
@@ -2692,6 +3703,10 @@ void MainWindow::onModelsFetched(const QStringList &models)
 
 void MainWindow::onModelChanged(const QString &model)
 {
+    // Never persist transient combo states (cleared, placeholder text).
+    if (model.isEmpty() || model == "Loading models...") {
+        return;
+    }
     m_apiClient->setModel(model);
     m_settings.setValue("model", model);
     m_settings.setValue("lastModel", model);
@@ -2709,15 +3724,28 @@ void MainWindow::onNewChat()
     m_inputField->setFocus();
 }
 
-void MainWindow::onChatSelected(QListWidgetItem *current, QListWidgetItem *previous)
-{
-    Q_UNUSED(current);
-    Q_UNUSED(previous);
-}
-
 void MainWindow::deleteChatAtRow(int row)
 {
     if (row < 0 || row >= m_chatSessions.size()) return;
+
+    if (QMessageBox::question(this, "Delete Chat",
+            QString("Delete \"%1\" and its messages? This cannot be undone.").arg(m_chatSessions[row].title),
+            QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) {
+        return;
+    }
+
+    // The chat an in-flight request belongs to cannot disappear: cancel first,
+    // otherwise the answer would be written into an unrelated chat.
+    if (m_requestInFlight && m_requestChatIndex == row) {
+        m_apiClient->cancelCurrentRequest();
+        m_requestChatIndex = -1;
+    } else if (m_requestChatIndex > row) {
+        m_requestChatIndex--;
+    }
+
+    const QString removedId = m_chatSessions[row].id;
+    m_settings.remove("chatMessages/" + removedId);
+    m_settings.remove("draft_" + removedId);
 
     if (m_chatSessions.size() == 1) {
         m_chatSessions.clear();
@@ -2730,7 +3758,9 @@ void MainWindow::deleteChatAtRow(int row)
             if (m_currentChatIndex >= m_chatSessions.size()) {
                 m_currentChatIndex = m_chatSessions.size() - 1;
             }
-            switchToChat(m_currentChatIndex);
+            // The index now refers to a different chat, so the "same chat"
+            // early return must not skip the rebuild.
+            switchToChat(m_currentChatIndex, true);
         } else if (m_currentChatIndex > row) {
             m_currentChatIndex--;
         }
@@ -2831,21 +3861,26 @@ void MainWindow::updateCharCounter()
     m_inputField->setFixedHeight(clampedHeight);
 }
 
-void MainWindow::handleQuickCommand(const QString &command)
+bool MainWindow::handleQuickCommand(const QString &command)
 {
     if (command == "/clear") {
-        if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
-            m_chatSessions[m_currentChatIndex].messages.clear();
-            m_chatSessions[m_currentChatIndex].messageCount = 0;
-            clearChatDisplay();
-            saveChatSessions();
-            showWelcomeScreen();
+        if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return true;
+        m_apiClient->cancelCurrentRequest();
+        m_chatSessions[m_currentChatIndex].messages.clear();
+        m_chatSessions[m_currentChatIndex].messageCount = 0;
+        m_currentChatImage.clear();
+        if (m_imagePreview) {
+            m_imagePreview->clear();
+            m_imagePreview->setVisible(false);
         }
-        return;
+        clearChatDisplay();
+        saveChatSessions();
+        showWelcomeScreen();
+        return true;
     }
 
     if (command == "/stats") {
-        if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return;
+        if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return true;
         const auto &chat = m_chatSessions[m_currentChatIndex];
         int totalTokens = 0;
         int msgCount = chat.messages.size();
@@ -2854,16 +3889,18 @@ void MainWindow::handleQuickCommand(const QString &command)
         }
         QMessageBox::information(this, "Chat Statistics",
             QString("Chat: %1\nMessages: %2\nTotal Tokens: %3").arg(chat.title).arg(msgCount).arg(totalTokens));
-        return;
+        return true;
     }
 
     if (command.startsWith("/model ")) {
         QString modelName = command.mid(7).trimmed();
-        if (!modelName.isEmpty()) {
-            m_modelCombo->setCurrentText(modelName);
-            onModelChanged(modelName);
+        if (modelName.isEmpty()) {
+            QMessageBox::warning(this, "Quick Commands", "Usage: /model <name>");
+            return true;
         }
-        return;
+        m_modelCombo->setCurrentText(modelName);
+        onModelChanged(modelName);
+        return true;
     }
 
     if (command == "/help") {
@@ -2873,13 +3910,22 @@ void MainWindow::handleQuickCommand(const QString &command)
             "/stats - Show chat statistics\n"
             "/model <name> - Change model\n"
             "/search - Open chat search");
-        return;
+        return true;
     }
 
     if (command == "/search") {
         showSearchBar();
-        return;
+        return true;
     }
+
+    // Unknown command: the caller puts the text back so a typo is not
+    // silently swallowed.
+    QTextCursor cursor = m_inputField->textCursor();
+    cursor.setPosition(0);
+    m_inputField->setTextCursor(cursor);
+    QMessageBox::information(this, "Quick Commands",
+        QString("Unknown command: %1\nUse /help to list the available commands.").arg(command));
+    return false;
 }
 
 void MainWindow::loadProfiles()
@@ -2895,7 +3941,7 @@ void MainWindow::loadProfiles()
                 QJsonObject obj = val.toObject();
                 ApiProfile profile;
                 profile.name = obj["name"].toString();
-                profile.apiKey = obj["apiKey"].toString();
+                profile.apiKey = CredentialStore::unprotect(obj["apiKey"].toString());
                 profile.model = obj["model"].toString();
                 profile.systemPrompt = obj["systemPrompt"].toString();
                 profile.temperature = obj["temperature"].toDouble();
@@ -2908,7 +3954,7 @@ void MainWindow::loadProfiles()
     if (m_profiles.isEmpty()) {
         ApiProfile defaultProfile;
         defaultProfile.name = "Default";
-        defaultProfile.apiKey = m_settings.value("apiKey").toString();
+        defaultProfile.apiKey = CredentialStore::unprotect(m_settings.value("apiKey").toString());
         defaultProfile.model = m_settings.value("model", "venice-uncensored").toString();
         defaultProfile.systemPrompt = m_settings.value("systemPrompt").toString();
         defaultProfile.temperature = m_settings.value("temperature", 0.7).toDouble();
@@ -2934,7 +3980,7 @@ void MainWindow::saveProfiles()
     for (const auto &profile : m_profiles) {
         QJsonObject obj;
         obj["name"] = profile.name;
-        obj["apiKey"] = profile.apiKey;
+        obj["apiKey"] = CredentialStore::protect(profile.apiKey);
         obj["model"] = profile.model;
         obj["systemPrompt"] = profile.systemPrompt;
         obj["temperature"] = profile.temperature;
@@ -3047,8 +4093,14 @@ void MainWindow::onManageProfiles()
 
     QHBoxLayout *btnLayout = new QHBoxLayout();
     QPushButton *addBtn = new QPushButton("Add", &dialog);
+    addBtn->setIcon(makeLineIcon(AppIconGlyph::NewChat));
+    addBtn->setIconSize(QSize(14, 14));
     QPushButton *editBtn = new QPushButton("Edit", &dialog);
+    editBtn->setIcon(makeLineIcon(AppIconGlyph::Edit));
+    editBtn->setIconSize(QSize(14, 14));
     QPushButton *deleteBtn = new QPushButton("Delete", &dialog);
+    deleteBtn->setIcon(makeLineIcon(AppIconGlyph::Trash));
+    deleteBtn->setIconSize(QSize(14, 14));
     btnLayout->addWidget(addBtn);
     btnLayout->addWidget(editBtn);
     btnLayout->addWidget(deleteBtn);
@@ -3190,6 +4242,13 @@ void MainWindow::updateContextUsage()
     else if (currentModel.contains("large", Qt::CaseInsensitive)) maxContext = 8192;
     else if (currentModel.contains("medium", Qt::CaseInsensitive)) maxContext = 4096;
 
+    // Without usage data (streaming never reports it) an empty label is more
+    // honest than "0/4096".
+    if (totalTokens <= 0) {
+        if (m_statusContextUsage) m_statusContextUsage->clear();
+        return;
+    }
+
     double usage = (double)totalTokens / maxContext * 100.0;
     QString color = usage < 50 ? "#4ade80" : (usage < 80 ? "#fbbf24" : "#f87171");
 
@@ -3217,21 +4276,17 @@ void MainWindow::hideSearchBar()
 
 void MainWindow::onSearchTextChanged(const QString &text)
 {
-    clearHighlights();
-    if (text.isEmpty()) {
-        if (m_searchBar) m_searchBar->m_matchCount->setText("0/0");
-        return;
-    }
-
+    // One pass over the visible cards: each card re-renders at most once, and
+    // clearHighlight() is a no-op for cards that carry no highlight.
     m_highlightedCards.clear();
     for (int i = 0; i < m_chatLayout->count(); ++i) {
         QLayoutItem *item = m_chatLayout->itemAt(i);
-        if (auto *widget = item->widget()) {
-            if (auto *card = qobject_cast<ChatMessageCard*>(widget)) {
-                if (card->content().contains(text, Qt::CaseInsensitive)) {
-                    card->highlightText(text);
-                    m_highlightedCards.append(card);
-                }
+        if (auto *card = qobject_cast<ChatMessageCard*>(item->widget())) {
+            if (!text.isEmpty() && card->content().contains(text, Qt::CaseInsensitive)) {
+                card->highlightText(text);
+                m_highlightedCards.append(card);
+            } else {
+                card->clearHighlight();
             }
         }
     }
@@ -3249,9 +4304,7 @@ void MainWindow::onFindNext()
 {
     if (m_highlightedCards.isEmpty()) return;
     m_currentHighlightIndex = (m_currentHighlightIndex + 1) % m_highlightedCards.size();
-    auto *card = m_highlightedCards[m_currentHighlightIndex];
-    card->setStyleSheet(card->styleSheet());
-    scrollToBottom();
+    m_scrollArea->ensureWidgetVisible(m_highlightedCards[m_currentHighlightIndex], 0, 120);
     if (m_searchBar) {
         m_searchBar->m_matchCount->setText(QString("%1/%2").arg(m_currentHighlightIndex + 1).arg(m_highlightedCards.size()));
     }
@@ -3261,17 +4314,10 @@ void MainWindow::onFindPrevious()
 {
     if (m_highlightedCards.isEmpty()) return;
     m_currentHighlightIndex = (m_currentHighlightIndex - 1 + m_highlightedCards.size()) % m_highlightedCards.size();
-    auto *card = m_highlightedCards[m_currentHighlightIndex];
-    card->setStyleSheet(card->styleSheet());
-    scrollToBottom();
+    m_scrollArea->ensureWidgetVisible(m_highlightedCards[m_currentHighlightIndex], 0, 120);
     if (m_searchBar) {
         m_searchBar->m_matchCount->setText(QString("%1/%2").arg(m_currentHighlightIndex + 1).arg(m_highlightedCards.size()));
     }
-}
-
-void MainWindow::highlightInChat(const QString &text)
-{
-    onSearchTextChanged(text);
 }
 
 void MainWindow::clearHighlights()
@@ -3307,6 +4353,68 @@ void MainWindow::playNotificationSound()
 {
     if (!m_soundInitialized) {
         m_notificationSound = new QSoundEffect(this);
+
+        // QSoundEffect is inert without a source, so the completion tone is
+        // synthesised into a temp file on first use.
+        static const char toneName[] = "simpleaiclient-notify.wav";
+        QString cachePath = QStandardPaths::writableLocation(QStandardPaths::TempLocation) + QLatin1String(toneName);
+        if (!QFileInfo::exists(cachePath) && !QFileInfo::exists(m_settings.value("notificationTonePath").toString())) {
+            QFile toneFile(cachePath);
+            if (toneFile.open(QIODevice::WriteOnly)) {
+                QByteArray wav;
+                const int sampleRate = 22050;
+                const int samples = static_cast<int>(sampleRate * 0.18);
+                QVector<qint16> pcm;
+                pcm.reserve(samples);
+                for (int i = 0; i < samples; ++i) {
+                    const double t = static_cast<double>(i) / sampleRate;
+                    // Simple two-note chime with an exponential decay envelope.
+                    const double freq = t < 0.09 ? 880.0 : 1174.7;
+                    const double envelope = std::exp(-6.0 * t);
+                    const double value = std::sin(2.0 * M_PI * freq * t) * envelope * 0.28;
+                    pcm.append(static_cast<qint16>(std::clamp(value, -1.0, 1.0) * 32767.0));
+                }
+
+                const quint32 dataSize = static_cast<quint32>(pcm.size() * 2);
+                QByteArray header;
+                auto append32 = [&header](quint32 v) {
+                    for (int b = 0; b < 4; ++b) {
+                        header.append(static_cast<char>((v >> (8 * b)) & 0xFF));
+                    }
+                };
+                auto append16 = [&header](quint16 v) {
+                    header.append(static_cast<char>(v & 0xFF));
+                    header.append(static_cast<char>((v >> 8) & 0xFF));
+                };
+                header.append("RIFF");
+                append32(36 + dataSize);
+                header.append("WAVE");
+                header.append("fmt ");
+                append32(16);
+                append16(1);                          // PCM
+                append16(1);                          // mono
+                append32(static_cast<quint32>(sampleRate));
+                append32(static_cast<quint32>(sampleRate * 2));
+                append16(2);                          // block align
+                append16(16);                         // bits per sample
+                header.append("data");
+                append32(dataSize);
+
+                wav = header;
+                for (qint16 s : pcm) {
+                    wav.append(static_cast<char>(s & 0xFF));
+                    wav.append(static_cast<char>((s >> 8) & 0xFF));
+                }
+                toneFile.write(wav);
+            }
+        }
+
+        const QString source = QFileInfo::exists(m_settings.value("notificationTonePath").toString())
+            ? m_settings.value("notificationTonePath").toString()
+            : cachePath;
+        if (QFileInfo::exists(source)) {
+            m_notificationSound->setSource(QUrl::fromLocalFile(source));
+        }
         m_soundInitialized = true;
     }
     if (m_notificationSound && m_notificationSound->isLoaded()) {
@@ -3391,8 +4499,26 @@ void MainWindow::setRequestInFlight(bool inFlight)
 {
     m_requestInFlight = inFlight;
     m_sendButton->setEnabled(true);
-    m_sendButton->setIcon(style()->standardIcon(inFlight ? QStyle::SP_BrowserStop : QStyle::SP_ArrowRight));
+    m_sendButton->setIcon(makeLineIcon(inFlight ? AppIconGlyph::Stop : AppIconGlyph::Send));
     m_sendButton->setToolTip(inFlight ? "Stop generation" : "Send message");
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    // Draft, scroll position and the current turn were only persisted on chat
+    // switches, so a quit lost the last input.
+    saveDraft();
+    saveCurrentChatScrollPosition();
+    if (m_requestInFlight) {
+        m_apiClient->cancelCurrentRequest();
+    }
+    saveChatSessions();
+    if (m_backupTimer && m_backupTimer->isActive()) {
+        m_backupTimer->stop();
+        saveChatBackup();
+    }
+    saveSettings();
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
@@ -3448,6 +4574,8 @@ void MainWindow::onToggleAutoScroll()
 {
     m_autoScroll = m_autoScrollToggle->isChecked();
     m_settings.setValue("autoScroll", m_autoScroll);
+    if (m_autoScroll) scrollToBottom();
+    else m_scrollFollowTimer->stop();
 }
 
 void MainWindow::adjustFontSize(int delta)
@@ -3464,16 +4592,10 @@ void MainWindow::resetFontSize()
 
 void MainWindow::applyChatFontSize()
 {
-    QString fontSizeStyle = QString("font-size: %1px;").arg(m_chatFontSize);
     for (int i = 0; i < m_chatLayout->count(); ++i) {
         QLayoutItem *item = m_chatLayout->itemAt(i);
-        if (auto *widget = item->widget()) {
-            if (auto *card = qobject_cast<ChatMessageCard*>(widget)) {
-                QLabel *label = widget->findChild<QLabel*>();
-                if (label && label != m_thinkingIndicator) {
-                    label->setStyleSheet(label->styleSheet() + " " + fontSizeStyle);
-                }
-            }
+        if (auto *card = qobject_cast<ChatMessageCard*>(item->widget())) {
+            card->setContentFontSize(m_chatFontSize);
         }
     }
 }
@@ -3481,15 +4603,32 @@ void MainWindow::applyChatFontSize()
 void MainWindow::onApiErrorWithRetry(const QString &error)
 {
     m_retryCount++;
-    if (m_retryCount <= m_maxRetries) {
+    if (m_retryCount <= m_maxRetries && !m_pendingMessages.isEmpty()) {
         int delayMs = (1 << (m_retryCount - 1)) * 1000;
         if (m_statusConnection) {
             m_statusConnection->setText(QString("Retrying (%1/%2)...").arg(m_retryCount).arg(m_maxRetries));
         }
-        m_retryTimer->singleShot(delayMs, this, [this]() {
-            if (!m_pendingMessages.isEmpty()) {
-                m_apiClient->sendMessage(m_pendingMessages);
+
+        // Drop the failed attempt's partial card so the retry starts a fresh
+        // one instead of appending to it.
+        m_streamRenderTimer->stop();
+        m_pendingStreamChunk.clear();
+        m_streamedContent.clear();
+        if (m_streamingCard) {
+            m_chatLayout->removeWidget(m_streamingCard);
+            delete m_streamingCard;
+            m_streamingCard = nullptr;
+        }
+        if (m_requestChatIndex == m_currentChatIndex) {
+            showThinkingIndicator();
+        }
+
+        const QList<ChatMessage> retryMessages = m_pendingMessages;
+        m_retryTimer->singleShot(delayMs, this, [this, retryMessages]() {
+            if (!m_requestInFlight || retryMessages.isEmpty()) {
+                return;
             }
+            m_apiClient->sendMessage(retryMessages);
         });
     } else {
         m_retryCount = 0;

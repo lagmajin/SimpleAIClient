@@ -5,6 +5,14 @@
 #include <QThread>
 #include <QDebug>
 #include <QDateTime>
+#include <QPointer>
+
+namespace {
+constexpr int kConnectTimeoutSeconds = 15;
+constexpr int kWriteTimeoutSeconds = 30;
+constexpr int kReadTimeoutSeconds = 120;
+constexpr int kMaxErrorBodyBytes = 64 * 1024;
+}
 
 ApiClient::ApiClient(QObject *parent)
     : QObject(parent)
@@ -16,6 +24,11 @@ ApiClient::ApiClient(QObject *parent)
     , m_activeRequestThread(nullptr)
     , m_activeRequestWorker(nullptr)
 {
+}
+
+ApiClient::~ApiClient()
+{
+    shutdownActiveRequest();
 }
 
 void ApiClient::setApiKey(const QString &key)
@@ -55,7 +68,7 @@ void ApiClient::setWebSearch(bool enabled)
 
 void ApiClient::sendMessage(const QList<ChatMessage> &messages)
 {
-    cancelCurrentRequest();
+    shutdownActiveRequest();
 
     QThread *thread = new QThread();
     ChatRequestWorker *worker = new ChatRequestWorker(m_apiKey, m_model, messages, m_streaming, m_systemPrompt, m_temperature, m_maxTokens, m_webSearch);
@@ -63,35 +76,53 @@ void ApiClient::sendMessage(const QList<ChatMessage> &messages)
     m_activeRequestThread = thread;
     m_activeRequestWorker = worker;
 
+    // Stale workers can still be draining their socket: drop everything they
+    // emit instead of letting it reach the UI and the chat state.
+    const auto isCurrent = [this, worker]() { return m_activeRequestWorker == worker; };
+
     connect(thread, &QThread::started, worker, &ChatRequestWorker::execute);
-    connect(worker, &ChatRequestWorker::responseReceived, this, &ApiClient::responseReceived);
-    connect(worker, &ChatRequestWorker::responseChunk, this, &ApiClient::responseChunk);
-    connect(worker, &ChatRequestWorker::responseFinished, this, &ApiClient::responseFinished);
-    connect(worker, &ChatRequestWorker::requestCancelled, this, &ApiClient::requestCancelled);
-    connect(worker, &ChatRequestWorker::errorOccurred, this, &ApiClient::errorOccurred);
+    connect(worker, &ChatRequestWorker::responseReceived, this, [this, isCurrent](const QString &response, int p, int c, int t, int ms) {
+        if (isCurrent()) emit responseReceived(response, p, c, t, ms);
+    });
+    connect(worker, &ChatRequestWorker::responseChunk, this, [this, isCurrent](const QString &chunk) {
+        if (isCurrent()) emit responseChunk(chunk);
+    });
+    connect(worker, &ChatRequestWorker::responseFinished, this, [this, isCurrent](int ms) {
+        if (isCurrent()) emit responseFinished(ms);
+    });
+    connect(worker, &ChatRequestWorker::requestCancelled, this, [this, isCurrent]() {
+        if (isCurrent()) emit requestCancelled();
+    });
+    connect(worker, &ChatRequestWorker::errorOccurred, this, [this, isCurrent](const QString &error) {
+        if (isCurrent()) emit errorOccurred(error);
+    });
     connect(worker, &ChatRequestWorker::responseReceived, thread, &QThread::quit);
     connect(worker, &ChatRequestWorker::responseFinished, thread, &QThread::quit);
     connect(worker, &ChatRequestWorker::requestCancelled, thread, &QThread::quit);
     connect(worker, &ChatRequestWorker::errorOccurred, thread, &QThread::quit);
-    connect(thread, &QThread::finished, this, [this, thread, worker]() {
-        if (m_activeRequestThread == thread) {
-            m_activeRequestThread = nullptr;
-        }
-        if (m_activeRequestWorker == worker) {
-            m_activeRequestWorker = nullptr;
-        }
-    });
     connect(thread, &QThread::finished, worker, &QObject::deleteLater);
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
 
     thread->start();
 }
 
+void ApiClient::shutdownActiveRequest()
+{
+    if (!m_activeRequestWorker) {
+        return;
+    }
+
+    // cancel() only touches an atomic flag and httplib's own (thread-safe)
+    // stop(), so it is called directly: a queued call would sit unprocessed in
+    // the worker thread's event queue, which is blocked inside Post().
+    m_activeRequestWorker->cancel();
+    m_activeRequestWorker = nullptr;
+    m_activeRequestThread = nullptr;
+}
+
 void ApiClient::cancelCurrentRequest()
 {
-    if (m_activeRequestWorker) {
-        QMetaObject::invokeMethod(m_activeRequestWorker, "cancel", Qt::QueuedConnection);
-    }
+    shutdownActiveRequest();
 }
 
 void ApiClient::fetchModels()
@@ -116,39 +147,82 @@ ChatRequestWorker::ChatRequestWorker(const QString &apiKey, const QString &model
 {
 }
 
+std::shared_ptr<httplib::Client> ChatRequestWorker::takeClientSnapshot()
+{
+    std::lock_guard<std::mutex> lock(m_clientMutex);
+    return m_client;
+}
+
 void ChatRequestWorker::cancel()
 {
     m_cancelRequested.store(true);
-    if (m_client) {
-        m_client->stop();
+    if (auto client = takeClientSnapshot()) {
+        client->stop();
     }
+}
+
+QString ChatRequestWorker::buildErrorMessage(int status, const QByteArray &body)
+{
+    QString errorMsg = QString("HTTP %1").arg(status);
+
+    QJsonParseError parseError;
+    const QJsonDocument errDoc = QJsonDocument::fromJson(body, &parseError);
+    if (parseError.error == QJsonParseError::NoError && errDoc.isObject()) {
+        const QJsonObject root = errDoc.object();
+
+        const QJsonValue errorVal = root.value("error");
+        if (errorVal.isString()) {
+            return errorVal.toString();
+        }
+        if (errorVal.isObject()) {
+            const QJsonObject errorObj = errorVal.toObject();
+            const QString message = errorObj.value("message").toString();
+            if (!message.isEmpty()) {
+                return message;
+            }
+        }
+
+        const QJsonValue detailsVal = root.value("details");
+        if (detailsVal.isObject()) {
+            const QJsonValue errorsVal = detailsVal.toObject().value("_errors");
+            if (errorsVal.isArray() && !errorsVal.toArray().isEmpty()) {
+                const QJsonValue first = errorsVal.toArray().at(0);
+                const QString detail = first.isString() ? first.toString() : first.toObject().value("msg").toString();
+                if (!detail.isEmpty()) {
+                    return detail;
+                }
+            }
+        }
+    }
+
+    if (!body.isEmpty()) {
+        errorMsg += ": " + QString::fromUtf8(body.left(kMaxErrorBodyBytes));
+    }
+    return errorMsg;
 }
 
 QString ChatRequestWorker::parseSSELine(const QString &line)
 {
-    if (line.isEmpty() || line == "data: [DONE]") {
+    if (!line.startsWith("data:")) {
         return QString();
     }
 
-    QString data = line;
-    if (data.startsWith("data: ")) {
-        data = data.mid(6);
+    QString data = line.mid(5);
+    if (data.startsWith(" ")) {
+        data = data.mid(1);
+    }
+    if (data == "[DONE]") {
+        return QString();
     }
 
-    QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8());
+    const QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8());
     if (doc.isObject()) {
-        QJsonObject obj = doc.object();
+        const QJsonObject obj = doc.object();
         if (obj.contains("choices")) {
-            QJsonArray choices = obj["choices"].toArray();
+            const QJsonArray choices = obj.value("choices").toArray();
             if (!choices.isEmpty()) {
-                QJsonObject choice = choices[0].toObject();
-                QJsonObject delta = choice["delta"].toObject();
-                QString content = delta["content"].toString();
-                QString finishReason = choice["finish_reason"].toString();
-                if (finishReason == "stop") {
-                    return QString();
-                }
-                return content;
+                const QJsonObject choice = choices.at(0).toObject();
+                return choice.value("delta").toObject().value("content").toString();
             }
         }
     }
@@ -157,11 +231,31 @@ QString ChatRequestWorker::parseSSELine(const QString &line)
 
 void ChatRequestWorker::execute()
 {
+    // httplib throws (e.g. std::invalid_argument for unsupported schemes when
+    // built without SSL). An exception escaping this worker thread would
+    // terminate the whole process; report it as an error instead.
+    try {
+        executeImpl();
+    } catch (const std::exception &e) {
+        emit errorOccurred(QString("Request failed: %1").arg(e.what()));
+    } catch (...) {
+        emit errorOccurred("Request failed: unknown exception");
+    }
+}
+
+void ChatRequestWorker::executeImpl()
+{
     m_startTime = QDateTime::currentMSecsSinceEpoch();
 
     m_cancelRequested.store(false);
-    m_client = std::make_shared<httplib::Client>("https://api.venice.ai");
-    m_client->set_follow_location(true);
+    {
+        std::lock_guard<std::mutex> lock(m_clientMutex);
+        m_client = std::make_shared<httplib::Client>("https://api.venice.ai");
+        m_client->set_follow_location(true);
+        m_client->set_connection_timeout(kConnectTimeoutSeconds, 0);
+        m_client->set_read_timeout(kReadTimeoutSeconds, 0);
+        m_client->set_write_timeout(kWriteTimeoutSeconds, 0);
+    }
 
     QJsonObject payload;
     payload["model"] = m_model;
@@ -201,7 +295,7 @@ void ChatRequestWorker::execute()
         jsonMessages.append(jsonMsg);
     }
 
-    if (m_temperature > 0) {
+    if (m_temperature >= 0) {
         payload["temperature"] = m_temperature;
     }
 
@@ -224,28 +318,58 @@ void ChatRequestWorker::execute()
         {"Authorization", "Bearer " + m_apiKey.toStdString()}
     };
 
+    auto client = takeClientSnapshot();
+    if (!client) {
+        emit errorOccurred("Request failed: no HTTP client");
+        return;
+    }
+
     if (m_streaming) {
-        QString fullResponse;
-        httplib::Result res = m_client->Post("/api/v1/chat/completions", headers, body, "application/json",
+        // httplib hands over raw socket-read boundaries, not SSE event
+        // boundaries, and never fills Result::body when a content receiver is
+        // supplied. Keep the unterminated tail across calls so a `data: {...}`
+        // line split by a chunk boundary is not silently dropped, and keep any
+        // non-SSE payload (the error document) for the error path.
+        QString lineBuffer;
+        QByteArray nonSseBody;
+        bool sawSseData = false;
+
+        const auto handleLine = [&](const QString &rawLine) {
+            const QString line = rawLine.trimmed();
+            if (line.isEmpty()) {
+                return;
+            }
+            if (!line.startsWith("data:")) {
+                if (!sawSseData && nonSseBody.size() < kMaxErrorBodyBytes) {
+                    nonSseBody += rawLine.toUtf8();
+                    nonSseBody += '\n';
+                }
+                return;
+            }
+            sawSseData = true;
+            const QString content = parseSSELine(line);
+            if (!content.isEmpty()) {
+                emit responseChunk(content);
+            }
+        };
+
+        httplib::Result res = client->Post("/api/v1/chat/completions", headers, body, "application/json",
             [&](const char *data, size_t data_length) {
                 if (m_cancelRequested.load()) {
                     return false;
                 }
-                QString chunk = QString::fromUtf8(data, static_cast<int>(data_length));
-                QStringList lines = chunk.split("\n");
-                for (const auto &line : lines) {
-                    QString content = parseSSELine(line.trimmed());
-                    if (!content.isEmpty()) {
-                        fullResponse += content;
-                        emit responseChunk(content);
-                    }
+                lineBuffer += QString::fromUtf8(data, static_cast<int>(data_length));
+                int newline = lineBuffer.indexOf('\n');
+                while (newline >= 0) {
+                    handleLine(lineBuffer.left(newline));
+                    lineBuffer.remove(0, newline + 1);
+                    newline = lineBuffer.indexOf('\n');
                 }
                 return true;
             });
 
         if (m_cancelRequested.load()) {
             emit requestCancelled();
-            m_client.reset();
             return;
         }
 
@@ -253,43 +377,26 @@ void ChatRequestWorker::execute()
             QString errMsg = QString("Request failed: error code %1").arg(static_cast<int>(res.error()));
             qDebug() << "ChatRequestWorker Error:" << errMsg;
             emit errorOccurred(errMsg);
-            m_client.reset();
             return;
         }
 
         if (res->status != 200) {
-            QString errorMsg = QString("HTTP %1").arg(res->status);
-            qDebug() << "ChatRequestWorker HTTP Error:" << res->status << QString::fromStdString(res->body);
-            QJsonDocument errDoc = QJsonDocument::fromJson(QByteArray::fromStdString(res->body));
-            if (errDoc.isObject()) {
-                QJsonValue detailsVal = errDoc.object()["details"];
-                if (detailsVal.isObject()) {
-                    QJsonValue errorsVal = detailsVal.toObject()["_errors"];
-                    if (errorsVal.isArray() && !errorsVal.toArray().isEmpty()) {
-                        errorMsg = errorsVal.toArray()[0].toString();
-                    }
-                }
-                if (errorMsg.startsWith("HTTP")) {
-                    QJsonValue errorVal = errDoc.object()["error"];
-                    if (errorVal.isString()) {
-                        errorMsg = errorVal.toString();
-                    }
-                }
-            } else {
-                errorMsg += ": " + QString::fromStdString(res->body);
+            if (!lineBuffer.isEmpty()) {
+                handleLine(lineBuffer);
             }
+            const QByteArray errorBody = nonSseBody.isEmpty() ? QByteArray::fromStdString(res->body) : nonSseBody;
+            const QString errorMsg = buildErrorMessage(res->status, errorBody);
+            qDebug() << "ChatRequestWorker HTTP Error:" << res->status << errorMsg;
             emit errorOccurred(errorMsg);
-            m_client.reset();
             return;
         }
 
         emit responseFinished(static_cast<int>(QDateTime::currentMSecsSinceEpoch() - m_startTime));
     } else {
-        auto res = m_client->Post("/api/v1/chat/completions", headers, body, "application/json");
+        auto res = client->Post("/api/v1/chat/completions", headers, body, "application/json");
 
         if (m_cancelRequested.load()) {
             emit requestCancelled();
-            m_client.reset();
             return;
         }
 
@@ -297,33 +404,13 @@ void ChatRequestWorker::execute()
             QString errMsg = QString("Request failed: error code %1").arg(static_cast<int>(res.error()));
             qDebug() << "ChatRequestWorker Error:" << errMsg;
             emit errorOccurred(errMsg);
-            m_client.reset();
             return;
         }
 
         if (res->status != 200) {
-            QString errorMsg = QString("HTTP %1").arg(res->status);
-            qDebug() << "ChatRequestWorker HTTP Error:" << res->status << QString::fromStdString(res->body);
-            QJsonDocument errDoc = QJsonDocument::fromJson(QByteArray::fromStdString(res->body));
-            if (errDoc.isObject()) {
-                QJsonValue detailsVal = errDoc.object()["details"];
-                if (detailsVal.isObject()) {
-                    QJsonValue errorsVal = detailsVal.toObject()["_errors"];
-                    if (errorsVal.isArray() && !errorsVal.toArray().isEmpty()) {
-                        errorMsg = errorsVal.toArray()[0].toString();
-                    }
-                }
-                if (errorMsg.startsWith("HTTP")) {
-                    QJsonValue errorVal = errDoc.object()["error"];
-                    if (errorVal.isString()) {
-                        errorMsg = errorVal.toString();
-                    }
-                }
-            } else {
-                errorMsg += ": " + QString::fromStdString(res->body);
-            }
+            const QString errorMsg = buildErrorMessage(res->status, QByteArray::fromStdString(res->body));
+            qDebug() << "ChatRequestWorker HTTP Error:" << res->status << errorMsg;
             emit errorOccurred(errorMsg);
-            m_client.reset();
             return;
         }
 
@@ -355,6 +442,7 @@ void ChatRequestWorker::execute()
         }
     }
 
+    std::lock_guard<std::mutex> lock(m_clientMutex);
     m_client.reset();
 }
 
@@ -365,8 +453,25 @@ ModelsRequestWorker::ModelsRequestWorker(const QString &apiKey)
 
 void ModelsRequestWorker::execute()
 {
+    // httplib throws (e.g. std::invalid_argument for unsupported schemes when
+    // built without SSL). An exception escaping this worker thread would
+    // terminate the whole process; report it as an error instead.
+    try {
+        executeImpl();
+    } catch (const std::exception &e) {
+        emit errorOccurred(QString("Models request failed: %1").arg(e.what()));
+    } catch (...) {
+        emit errorOccurred("Models request failed: unknown exception");
+    }
+}
+
+void ModelsRequestWorker::executeImpl()
+{
     httplib::Client cli("https://api.venice.ai");
     cli.set_follow_location(true);
+    cli.set_connection_timeout(kConnectTimeoutSeconds, 0);
+    cli.set_read_timeout(kReadTimeoutSeconds, 0);
+    cli.set_write_timeout(kWriteTimeoutSeconds, 0);
 
     httplib::Headers headers = {
         {"Authorization", "Bearer " + m_apiKey.toStdString()}

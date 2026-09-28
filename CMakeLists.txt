@@ -57,6 +57,32 @@ if(NOT httplib_DIR)
     endforeach()
 endif()
 
+if(NOT unofficial-brotli_DIR)
+    set(_unofficial_brotli_hint_paths)
+
+    if(DEFINED ENV{unofficial-brotli_DIR} AND EXISTS "$ENV{unofficial-brotli_DIR}/unofficial-brotli-config.cmake")
+        list(APPEND _unofficial_brotli_hint_paths "$ENV{unofficial-brotli_DIR}")
+    endif()
+
+    if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+        list(APPEND _unofficial_brotli_hint_paths "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/unofficial-brotli")
+    endif()
+
+    if(DEFINED CMAKE_TOOLCHAIN_FILE)
+        get_filename_component(_vcpkg_buildsystems_dir "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)
+        get_filename_component(_vcpkg_scripts_dir "${_vcpkg_buildsystems_dir}" DIRECTORY)
+        get_filename_component(_vcpkg_root_dir "${_vcpkg_scripts_dir}" DIRECTORY)
+        list(APPEND _unofficial_brotli_hint_paths "${_vcpkg_root_dir}/installed/x64-windows/share/unofficial-brotli")
+    endif()
+
+    foreach(_unofficial_brotli_hint IN LISTS _unofficial_brotli_hint_paths)
+        if(EXISTS "${_unofficial_brotli_hint}/unofficial-brotli-config.cmake")
+            set(unofficial-brotli_DIR "${_unofficial_brotli_hint}" CACHE PATH "Path to unofficial-brotli-config.cmake" FORCE)
+            break()
+        endif()
+    endforeach()
+endif()
+
 if(NOT OPENSSL_ROOT_DIR)
     set(_openssl_root_hint_paths)
 
@@ -121,7 +147,12 @@ qt_add_executable(SimpleAIClient
     src/main.cpp
     src/mainwindow.cpp
     src/apiclient.cpp
+    src/credentialstore.cpp
 )
+
+if(WIN32)
+    target_link_libraries(SimpleAIClient PRIVATE Crypt32)
+endif()
 
 target_link_libraries(SimpleAIClient PRIVATE
     Qt6::Core
@@ -144,20 +175,37 @@ if(WIN32)
         COMMENT "Deploying Qt platform plugin..."
     )
 
-    if(DEFINED ENV{VCPKG_ROOT})
+    set(VCPKG_BIN "")
+    if(DEFINED ENV{VCPKG_ROOT} AND EXISTS "$ENV{VCPKG_ROOT}/installed/x64-windows/bin")
         set(VCPKG_BIN "$ENV{VCPKG_ROOT}/installed/x64-windows/bin")
+    elseif(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET AND EXISTS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
+        set(VCPKG_BIN "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
+    elseif(DEFINED CMAKE_TOOLCHAIN_FILE)
+        get_filename_component(_vcpkg_buildsystems_dir "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)
+        get_filename_component(_vcpkg_scripts_dir "${_vcpkg_buildsystems_dir}" DIRECTORY)
+        get_filename_component(_vcpkg_root_dir "${_vcpkg_scripts_dir}" DIRECTORY)
+        if(EXISTS "${_vcpkg_root_dir}/installed/x64-windows/bin")
+            set(VCPKG_BIN "${_vcpkg_root_dir}/installed/x64-windows/bin")
+        endif()
+    endif()
+
+    if(VCPKG_BIN)
         set(DEPLOY_DLLS
             "${VCPKG_BIN}/libcrypto-3-x64.dll"
             "${VCPKG_BIN}/libssl-3-x64.dll"
             "${VCPKG_BIN}/zlib1.dll"
+            "${VCPKG_BIN}/zlibd1.dll"
             "${VCPKG_BIN}/brotlicommon.dll"
             "${VCPKG_BIN}/brotlidec.dll"
         )
-        foreach(dll ${DEPLOY_DLLS})
-            if(EXISTS ${dll})
+
+        # Copy whichever vcpkg runtime DLLs are present so both Debug and Release
+        # runs have the right Zlib binary next to the executable.
+        foreach(dll IN LISTS DEPLOY_DLLS)
+            if(EXISTS "${dll}")
                 add_custom_command(TARGET SimpleAIClient POST_BUILD
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        ${dll} "${QT_DEPLOY_DIR}/"
+                        "${dll}" "${QT_DEPLOY_DIR}/"
                     COMMENT "Deploying DLL: ${dll}"
                 )
             endif()

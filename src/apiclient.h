@@ -6,6 +6,7 @@
 #include <QList>
 #include <QThread>
 #include <memory>
+#include <mutex>
 #include <atomic>
 #include <httplib.h>
 
@@ -26,6 +27,8 @@ class ApiClient : public QObject
 
 public:
     explicit ApiClient(QObject *parent = nullptr);
+    ~ApiClient() override;
+    QString apiKey() const { return m_apiKey; }
     void setApiKey(const QString &key);
     void setModel(const QString &model);
     void setStreaming(bool enabled);
@@ -46,6 +49,8 @@ signals:
     void modelsFetched(const QStringList &models);
 
 private:
+    void shutdownActiveRequest();
+
     QString m_apiKey;
     QString m_model;
     bool m_streaming;
@@ -75,7 +80,10 @@ signals:
     void errorOccurred(const QString &error);
 
 private:
+    void executeImpl();
     QString parseSSELine(const QString &line);
+    static QString buildErrorMessage(int status, const QByteArray &body);
+    std::shared_ptr<httplib::Client> takeClientSnapshot();
 
     QString m_apiKey;
     QString m_model;
@@ -88,6 +96,7 @@ private:
     bool m_webSearch;
     std::atomic_bool m_cancelRequested;
     std::shared_ptr<httplib::Client> m_client;
+    std::mutex m_clientMutex;
 };
 
 class ModelsRequestWorker : public QObject
@@ -104,6 +113,8 @@ signals:
     void errorOccurred(const QString &error);
 
 private:
+    void executeImpl();
+
     QString m_apiKey;
 };
 
