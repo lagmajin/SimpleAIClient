@@ -28,6 +28,7 @@
 #include <QCloseEvent>
 #include <QSoundEffect>
 #include "credentialstore.h"
+#include "theme.h"
 #include <QJsonObject>
 #include "apiclient.h"
 
@@ -50,9 +51,16 @@ struct ApiProfile {
     int maxTokens;
 };
 
+// Scrollbar styling shared by the composer, the code blocks and both scroll
+// areas; defined in mainwindow.cpp.
+QString scrollBarStyle();
+
 class AvatarLabel : public QLabel {
 public:
     AvatarLabel(const QString &role, QWidget *parent = nullptr);
+    void applyTheme();
+private:
+    QString m_role;
 };
 
 class ChatListItem : public QWidget {
@@ -61,6 +69,7 @@ public:
     ChatListItem(const QString &title, const QString &subtitle, int index, bool isPinned, QWidget *parent = nullptr);
     int index() const { return m_index; }
     void setActive(bool active);
+    void applyStyle();
 
 signals:
     void clicked(int index);
@@ -75,6 +84,7 @@ protected:
 
 private:
     bool m_isActive;
+    bool m_hovered = false;
     int m_index;
     bool m_isPinned;
     QLabel *m_iconLabel;
@@ -102,6 +112,7 @@ public:
     void clearHighlight();
     void setTimestamp(const QDateTime &timestamp);
     void setContentFontSize(int pixels);
+    void applyTheme();
 
 protected:
     void enterEvent(QEnterEvent *event) override;
@@ -115,6 +126,9 @@ signals:
 
 private:
     void renderMarkdown(const QString &text);
+    void applyCardStyle();
+    QString streamLabelStyle() const;
+    QString editFieldStyle() const;
     QString renderInlineMarkdown(const QString &text);
     void addCodeBlock(const QString &code, const QString &language);
     void addTextBlock(const QString &text);
@@ -253,6 +267,7 @@ private:
     void loadDraft();
     void clearDraft();
     void applyTheme();
+    void restyleCards();
     void updateCharCounter();
     // Returns false when the input is not a recognised command and the text
     // was put back into the input field.
@@ -357,6 +372,7 @@ private:
     QString m_streamedContent;
     int m_requestChatIndex;
     bool m_requestInFlight;
+    class ThemeController *m_theme;
 };
 
 #endif // MAINWINDOW_H

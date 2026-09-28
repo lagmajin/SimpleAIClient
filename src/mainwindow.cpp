@@ -99,6 +99,54 @@ enum class AppIconGlyph {
     Globe
 };
 
+namespace {
+
+double relativeLuminance(const QColor &c)
+{
+    auto ch = [](double v) {
+        v /= 255.0;
+        return v <= 0.03928 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * ch(c.red()) + 0.7152 * ch(c.green()) + 0.0722 * ch(c.blue());
+}
+
+double contrastRatio(const QColor &a, const QColor &b)
+{
+    const double la = relativeLuminance(a);
+    const double lb = relativeLuminance(b);
+    return (qMax(la, lb) + 0.05) / (qMin(la, lb) + 0.05);
+}
+
+// The icon palette was authored for the dark background, so several glyphs are
+// near-white and would disappear on light. Nudge a colour towards the opposite
+// end until it clears a 3:1 ratio against both panel surfaces, keeping its hue.
+QColor adaptIconColor(const QColor &color)
+{
+    const Theme &t = currentTheme();
+    const QColor backgrounds[] = {QColor(t.surface), QColor(t.window)};
+
+    const auto clears = [&backgrounds](const QColor &c) {
+        for (const QColor &bg : backgrounds) {
+            if (contrastRatio(c, bg) < 3.0) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    if (clears(color)) {
+        return color;
+    }
+
+    QColor adjusted = color;
+    for (int i = 0; i < 24 && !clears(adjusted); ++i) {
+        adjusted = t.isDarkTheme ? adjusted.lighter(110) : adjusted.darker(110);
+    }
+    return adjusted;
+}
+
+} // namespace
+
 QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QColor("#007acc"))
 {
     QPixmap pixmap(size, size);
@@ -109,9 +157,10 @@ QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QCo
 
     const qreal scale = size / 24.0;
     auto sx = [scale](qreal value) { return value * scale; };
+    const auto ink = [](const QColor &c) { return adaptIconColor(c); };
 
-    QPen pen(accent, sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-    QPen softPen(QColor("#8ab4f8"), sx(1.5), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    QPen pen(ink(accent), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    QPen softPen(ink(QColor("#8ab4f8")), sx(1.5), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
     painter.setPen(pen);
     painter.setBrush(Qt::NoBrush);
 
@@ -126,10 +175,10 @@ QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QCo
         mark.lineTo(sx(5), sx(17));
         mark.lineTo(sx(11), sx(12));
         mark.closeSubpath();
-        painter.setBrush(QColor("#007acc"));
+        painter.setBrush(ink(QColor("#007acc")));
         painter.setPen(Qt::NoPen);
         painter.drawPath(mark);
-        painter.setPen(QPen(QColor("#e8f3ff"), sx(1.6), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#e8f3ff")), sx(1.6), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawLine(QPointF(sx(10.5), sx(7.5)), QPointF(sx(15.5), sx(12)));
         painter.drawLine(QPointF(sx(15.5), sx(12)), QPointF(sx(10.5), sx(16.5)));
         break;
@@ -141,7 +190,7 @@ QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QCo
         painter.drawLine(QPointF(sx(13), sx(8.5)), QPointF(sx(18), sx(8.5)));
         break;
     case AppIconGlyph::Folder:
-        painter.setPen(QPen(QColor("#42a5f5"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#42a5f5")), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.setBrush(QColor(66, 165, 245, 45));
         {
             QPainterPath folder;
@@ -218,19 +267,19 @@ QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QCo
         });
         break;
     case AppIconGlyph::Stop:
-        painter.setBrush(QColor("#ef4444"));
+        painter.setBrush(ink(QColor("#ef4444")));
         painter.setPen(Qt::NoPen);
         painter.drawRoundedRect(QRectF(sx(7), sx(7), sx(10), sx(10)), sx(2), sx(2));
         break;
     case AppIconGlyph::Chat:
-        painter.setPen(QPen(QColor("#4fc3f7"), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#4fc3f7")), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawRoundedRect(QRectF(sx(4), sx(5), sx(16), sx(12)), sx(3), sx(3));
         painter.drawLine(QPointF(sx(8), sx(20)), QPointF(sx(11), sx(17)));
         painter.drawLine(QPointF(sx(8), sx(9.5)), QPointF(sx(16), sx(9.5)));
         painter.drawLine(QPointF(sx(8), sx(13)), QPointF(sx(14), sx(13)));
         break;
     case AppIconGlyph::Trash:
-        painter.setPen(QPen(QColor("#ef5350"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#ef5350")), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawLine(QPointF(sx(7), sx(7)), QPointF(sx(17), sx(7)));
         painter.drawLine(QPointF(sx(10), sx(5)), QPointF(sx(14), sx(5)));
         painter.drawRoundedRect(QRectF(sx(8), sx(8), sx(8), sx(11)), sx(1.5), sx(1.5));
@@ -238,39 +287,39 @@ QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QCo
         painter.drawLine(QPointF(sx(13.5), sx(10.5)), QPointF(sx(13.5), sx(16.5)));
         break;
     case AppIconGlyph::Search:
-        painter.setPen(QPen(QColor("#9ca3af"), sx(1.9), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#9ca3af")), sx(1.9), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawEllipse(QPointF(sx(10.5), sx(10.5)), sx(5), sx(5));
         painter.drawLine(QPointF(sx(14.5), sx(14.5)), QPointF(sx(19), sx(19)));
         break;
     case AppIconGlyph::ChevronUp:
-        painter.setPen(QPen(QColor("#cbd5e1"), sx(2), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#cbd5e1")), sx(2), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawLine(QPointF(sx(7), sx(14)), QPointF(sx(12), sx(9)));
         painter.drawLine(QPointF(sx(12), sx(9)), QPointF(sx(17), sx(14)));
         break;
     case AppIconGlyph::ChevronDown:
-        painter.setPen(QPen(QColor("#cbd5e1"), sx(2), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#cbd5e1")), sx(2), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawLine(QPointF(sx(7), sx(10)), QPointF(sx(12), sx(15)));
         painter.drawLine(QPointF(sx(12), sx(15)), QPointF(sx(17), sx(10)));
         break;
     case AppIconGlyph::Close:
     case AppIconGlyph::Cancel:
-        painter.setPen(QPen(QColor("#ef5350"), sx(2), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#ef5350")), sx(2), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawLine(QPointF(sx(8), sx(8)), QPointF(sx(16), sx(16)));
         painter.drawLine(QPointF(sx(16), sx(8)), QPointF(sx(8), sx(16)));
         break;
     case AppIconGlyph::Copy:
-        painter.setPen(QPen(QColor("#90caf9"), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#90caf9")), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawRoundedRect(QRectF(sx(8), sx(7), sx(10), sx(12)), sx(1.8), sx(1.8));
         painter.drawRoundedRect(QRectF(sx(5), sx(4), sx(10), sx(12)), sx(1.8), sx(1.8));
         break;
     case AppIconGlyph::Refresh:
-        painter.setPen(QPen(QColor("#81c784"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#81c784")), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawArc(QRectF(sx(5), sx(5), sx(14), sx(14)), 35 * 16, 250 * 16);
         painter.drawLine(QPointF(sx(16.8), sx(5.6)), QPointF(sx(18.8), sx(5.8)));
         painter.drawLine(QPointF(sx(18.8), sx(5.8)), QPointF(sx(18.1), sx(8.2)));
         break;
     case AppIconGlyph::Branch:
-        painter.setPen(QPen(QColor("#ce93d8"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#ce93d8")), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawLine(QPointF(sx(8), sx(6)), QPointF(sx(8), sx(18)));
         painter.drawLine(QPointF(sx(8), sx(12)), QPointF(sx(16), sx(8)));
         painter.drawEllipse(QPointF(sx(8), sx(6)), sx(2), sx(2));
@@ -278,20 +327,20 @@ QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QCo
         painter.drawEllipse(QPointF(sx(16), sx(8)), sx(2), sx(2));
         break;
     case AppIconGlyph::Edit:
-        painter.setPen(QPen(QColor("#ffb74d"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#ffb74d")), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawLine(QPointF(sx(7), sx(17)), QPointF(sx(16.5), sx(7.5)));
         painter.drawLine(QPointF(sx(14), sx(5)), QPointF(sx(19), sx(10)));
         painter.drawLine(QPointF(sx(6), sx(18)), QPointF(sx(10), sx(17)));
         break;
     case AppIconGlyph::Save:
-        painter.setPen(QPen(QColor("#4ade80"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#4ade80")), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawRoundedRect(QRectF(sx(5), sx(4), sx(14), sx(16)), sx(2), sx(2));
         painter.drawLine(QPointF(sx(8), sx(4)), QPointF(sx(8), sx(9)));
         painter.drawLine(QPointF(sx(16), sx(4)), QPointF(sx(16), sx(9)));
         painter.drawRoundedRect(QRectF(sx(8), sx(13), sx(8), sx(5)), sx(1), sx(1));
         break;
     case AppIconGlyph::Image:
-        painter.setPen(QPen(QColor("#64b5f6"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#64b5f6")), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawRoundedRect(QRectF(sx(4), sx(5), sx(16), sx(14)), sx(2), sx(2));
         painter.drawEllipse(QPointF(sx(15.5), sx(9)), sx(1.5), sx(1.5));
         painter.drawLine(QPointF(sx(6.5), sx(16.5)), QPointF(sx(10), sx(12.5)));
@@ -300,7 +349,7 @@ QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QCo
         painter.drawLine(QPointF(sx(16), sx(11.5)), QPointF(sx(19), sx(16.5)));
         break;
     case AppIconGlyph::Code:
-        painter.setPen(QPen(QColor("#4dd0e1"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#4dd0e1")), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawLine(QPointF(sx(9), sx(8)), QPointF(sx(5), sx(12)));
         painter.drawLine(QPointF(sx(5), sx(12)), QPointF(sx(9), sx(16)));
         painter.drawLine(QPointF(sx(15), sx(8)), QPointF(sx(19), sx(12)));
@@ -308,14 +357,14 @@ QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QCo
         painter.drawLine(QPointF(sx(13), sx(7)), QPointF(sx(11), sx(17)));
         break;
     case AppIconGlyph::Key:
-        painter.setPen(QPen(QColor("#ffd54f"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#ffd54f")), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawEllipse(QPointF(sx(8), sx(10)), sx(3), sx(3));
         painter.drawLine(QPointF(sx(11), sx(10)), QPointF(sx(20), sx(10)));
         painter.drawLine(QPointF(sx(16), sx(10)), QPointF(sx(16), sx(13)));
         painter.drawLine(QPointF(sx(19), sx(10)), QPointF(sx(19), sx(12)));
         break;
     case AppIconGlyph::Model:
-        painter.setPen(QPen(QColor("#26c6da"), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#26c6da")), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawRoundedRect(QRectF(sx(5), sx(5), sx(14), sx(14)), sx(3), sx(3));
         painter.drawLine(QPointF(sx(9), sx(9)), QPointF(sx(15), sx(9)));
         painter.drawLine(QPointF(sx(9), sx(12)), QPointF(sx(15), sx(12)));
@@ -323,7 +372,7 @@ QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QCo
         break;
     case AppIconGlyph::Pin:
     case AppIconGlyph::Unpin:
-        painter.setPen(QPen(QColor("#f06292"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#f06292")), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawLine(QPointF(sx(12), sx(13)), QPointF(sx(12), sx(21)));
         painter.drawLine(QPointF(sx(8), sx(5)), QPointF(sx(16), sx(5)));
         painter.drawLine(QPointF(sx(10), sx(5)), QPointF(sx(9), sx(13)));
@@ -334,19 +383,19 @@ QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QCo
         }
         break;
     case AppIconGlyph::Warning:
-        painter.setPen(QPen(QColor("#ffb300"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#ffb300")), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawPolygon(QPolygonF{QPointF(sx(12), sx(4)), QPointF(sx(21), sx(19)), QPointF(sx(3), sx(19))});
         painter.drawLine(QPointF(sx(12), sx(9)), QPointF(sx(12), sx(14)));
         painter.drawPoint(QPointF(sx(12), sx(16.5)));
         break;
     case AppIconGlyph::Info:
-        painter.setPen(QPen(QColor("#42a5f5"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#42a5f5")), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawEllipse(QPointF(sx(12), sx(12)), sx(8), sx(8));
         painter.drawLine(QPointF(sx(12), sx(11)), QPointF(sx(12), sx(16)));
         painter.drawPoint(QPointF(sx(12), sx(8)));
         break;
     case AppIconGlyph::Database:
-        painter.setPen(QPen(QColor("#fdd835"), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#fdd835")), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawEllipse(QPointF(sx(12), sx(6.5)), sx(6.5), sx(2.5));
         painter.drawLine(QPointF(sx(5.5), sx(6.5)), QPointF(sx(5.5), sx(17)));
         painter.drawLine(QPointF(sx(18.5), sx(6.5)), QPointF(sx(18.5), sx(17)));
@@ -354,14 +403,14 @@ QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QCo
         painter.drawArc(QRectF(sx(5.5), sx(9.5), sx(13), sx(5)), 180 * 16, 180 * 16);
         break;
     case AppIconGlyph::Terminal:
-        painter.setPen(QPen(QColor("#90a4ae"), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#90a4ae")), sx(1.8), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawRoundedRect(QRectF(sx(4), sx(5), sx(16), sx(14)), sx(2), sx(2));
         painter.drawLine(QPointF(sx(7), sx(9)), QPointF(sx(10), sx(12)));
         painter.drawLine(QPointF(sx(10), sx(12)), QPointF(sx(7), sx(15)));
         painter.drawLine(QPointF(sx(12), sx(15)), QPointF(sx(17), sx(15)));
         break;
     case AppIconGlyph::Globe:
-        painter.setPen(QPen(QColor("#29b6f6"), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(ink(QColor("#29b6f6")), sx(1.7), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawEllipse(QPointF(sx(12), sx(12)), sx(8), sx(8));
         painter.drawLine(QPointF(sx(4), sx(12)), QPointF(sx(20), sx(12)));
         painter.drawArc(QRectF(sx(8), sx(4), sx(8), sx(16)), 90 * 16, 180 * 16);
@@ -376,48 +425,47 @@ QIcon makeLineIcon(AppIconGlyph glyph, int size = 24, const QColor &accent = QCo
 
 AvatarLabel::AvatarLabel(const QString &role, QWidget *parent)
     : QLabel(parent)
+    , m_role(role)
 {
     setFixedSize(32, 32);
     setAlignment(Qt::AlignCenter);
+    applyTheme();
+}
+
+void AvatarLabel::applyTheme()
+{
+    const Theme &t = currentTheme();
 
     QPixmap pixmap(32, 32);
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
 
-    if (role == "user") {
-        painter.setBrush(QColor("#005c4b"));
-        painter.setPen(Qt::NoPen);
-        painter.drawEllipse(2, 2, 28, 28);
+    QColor brush = QColor(t.selection);
+    QString glyph = "AI";
+    int glyphSize = 14;
+    bool bold = true;
 
-        painter.setPen(QColor("#ffffff"));
-        QFont font = painter.font();
-        font.setPointSize(14);
-        font.setBold(true);
-        painter.setFont(font);
-        painter.drawText(pixmap.rect(), Qt::AlignCenter, "U");
-    } else if (role == "error") {
-        painter.setBrush(QColor("#8b0000"));
-        painter.setPen(Qt::NoPen);
-        painter.drawEllipse(2, 2, 28, 28);
-
-        painter.setPen(QColor("#ffffff"));
-        QFont font = painter.font();
-        font.setPointSize(16);
-        painter.setFont(font);
-        painter.drawText(pixmap.rect(), Qt::AlignCenter, "!");
-    } else {
-        painter.setBrush(QColor("#1d4ed8"));
-        painter.setPen(Qt::NoPen);
-        painter.drawEllipse(2, 2, 28, 28);
-
-        painter.setPen(QColor("#ffffff"));
-        QFont font = painter.font();
-        font.setPointSize(14);
-        font.setBold(true);
-        painter.setFont(font);
-        painter.drawText(pixmap.rect(), Qt::AlignCenter, "AI");
+    if (m_role == "user") {
+        brush = QColor(t.accent);
+        glyph = "U";
+    } else if (m_role == "error") {
+        brush = QColor(t.danger);
+        glyph = "!";
+        glyphSize = 16;
+        bold = false;
     }
+
+    painter.setBrush(brush);
+    painter.setPen(Qt::NoPen);
+    painter.drawEllipse(2, 2, 28, 28);
+
+    painter.setPen(QColor(t.accentText));
+    QFont font = painter.font();
+    font.setPointSize(glyphSize);
+    font.setBold(bold);
+    painter.setFont(font);
+    painter.drawText(pixmap.rect(), Qt::AlignCenter, glyph);
 
     setPixmap(pixmap);
 }
@@ -448,12 +496,12 @@ ChatListItem::ChatListItem(const QString &title, const QString &subtitle, int in
     textLayout->setSpacing(2);
 
     m_titleLabel = new QLabel(title, textContainer);
-    m_titleLabel->setStyleSheet("QLabel { color: #ececf1; font-size: 13px; font-weight: 600; }");
+    m_titleLabel->setStyleSheet("QLabel { color: " + currentTheme().textStrong + "; font-size: 13px; font-weight: 600; }");
     m_titleLabel->setWordWrap(false);
     textLayout->addWidget(m_titleLabel);
 
     m_subtitleLabel = new QLabel(subtitle, textContainer);
-    m_subtitleLabel->setStyleSheet("QLabel { color: #8e8e8e; font-size: 11px; }");
+    m_subtitleLabel->setStyleSheet("QLabel { color: " + currentTheme().textMuted + "; font-size: 11px; }");
     m_subtitleLabel->setWordWrap(false);
     textLayout->addWidget(m_subtitleLabel);
 
@@ -469,10 +517,36 @@ ChatListItem::ChatListItem(const QString &title, const QString &subtitle, int in
         "  border: none; "
         "  padding: 2px; "
         "} "
-        "QToolButton:hover { background-color: #404040; border-radius: 4px; }"
+        "QToolButton:hover { background-color: " + currentTheme().surfaceAlt + "; border-radius: 4px; }"
     );
     m_deleteBtn->setVisible(false);
     layout->addWidget(m_deleteBtn);
+
+    if (ThemeController *theme = themeController()) {
+        theme->registerStyle(this, [this]() {
+            return "QWidget { "
+                   "  background-color: transparent; "
+                   "  border: 1px solid transparent; "
+                   "  border-radius: 10px; "
+                   "}";
+        });
+        theme->registerStyle(m_titleLabel, [this]() {
+            return "QLabel { color: " + currentTheme().textStrong + "; font-size: 13px; font-weight: 600; }";
+        });
+        theme->registerStyle(m_subtitleLabel, [this]() {
+            return m_isActive
+                ? "QLabel { color: " + currentTheme().accentText + "; font-size: 11px; font-weight: 600; }"
+                : "QLabel { color: " + currentTheme().textMuted + "; font-size: 11px; }";
+        });
+        theme->registerStyle(m_deleteBtn, [this]() {
+            return "QToolButton { "
+                   "  background-color: transparent; "
+                   "  border: none; "
+                   "  padding: 2px; "
+                   "} "
+                   "QToolButton:hover { background-color: " + currentTheme().surfaceAlt + "; border-radius: 4px; }";
+        });
+    }
 
     connect(m_deleteBtn, &QToolButton::clicked, [this]() {
         emit deleteClicked(m_index);
@@ -492,38 +566,48 @@ ChatListItem::ChatListItem(const QString &title, const QString &subtitle, int in
     });
 }
 
+void ChatListItem::applyStyle()
+{
+    const Theme &t = currentTheme();
+
+    if (m_isActive) {
+        setStyleSheet("QWidget { background-color: " + t.accent + "; border: 1px solid " + t.accentHover + "; border-radius: 10px; }");
+    } else if (m_hovered) {
+        setStyleSheet("QWidget { background-color: " + t.surfaceAlt + "; border: 1px solid " + t.chipBorder + "; border-radius: 10px; }");
+    } else {
+        setStyleSheet("QWidget { background-color: transparent; border: 1px solid transparent; border-radius: 10px; }");
+    }
+
+    if (m_subtitleLabel) {
+        if (m_isActive) {
+            m_subtitleLabel->setStyleSheet("QLabel { color: " + t.accentText + "; font-size: 11px; font-weight: 600; }");
+        } else if (m_hovered) {
+            m_subtitleLabel->setStyleSheet("QLabel { color: " + t.textStrong + "; font-size: 11px; }");
+        } else {
+            m_subtitleLabel->setStyleSheet("QLabel { color: " + t.textMuted + "; font-size: 11px; }");
+        }
+    }
+}
+
 void ChatListItem::setActive(bool active)
 {
     m_isActive = active;
-    if (m_isActive) {
-        setStyleSheet("QWidget { background-color: #1f3a2d; border: 1px solid #15803d; border-radius: 10px; }");
-        if (m_subtitleLabel) {
-            m_subtitleLabel->setStyleSheet("QLabel { color: #d1fae5; font-size: 11px; font-weight: 600; }");
-        }
-    } else {
-        setStyleSheet("QWidget { background-color: transparent; border: 1px solid transparent; border-radius: 10px; }");
-        if (m_subtitleLabel) {
-            m_subtitleLabel->setStyleSheet("QLabel { color: #8e8e8e; font-size: 11px; }");
-        }
-    }
+    applyStyle();
 }
 
 void ChatListItem::enterEvent(QEnterEvent *event)
 {
     QWidget::enterEvent(event);
     m_deleteBtn->setVisible(true);
-    if (!m_isActive) {
-        setStyleSheet("QWidget { background-color: #262c34; border: 1px solid #334155; border-radius: 10px; }");
-    }
-    if (m_subtitleLabel && !m_isActive) {
-        m_subtitleLabel->setStyleSheet("QLabel { color: #cbd5e1; font-size: 11px; }");
-    }
+    m_hovered = true;
+    applyStyle();
 }
 
 void ChatListItem::leaveEvent(QEvent *event)
 {
     QWidget::leaveEvent(event);
     m_deleteBtn->setVisible(false);
+    m_hovered = false;
     setActive(m_isActive);
 }
 
@@ -549,16 +633,8 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
     m_avatar = new AvatarLabel(role, this);
 
     m_card = new QFrame(this);
-    QString bgColor = (role == "user" ? "#14532d" : (role == "error" ? "#4a1515" : "#20242b"));
-    m_card->setStyleSheet(
-        "QFrame { "
-        "  background-color: " + bgColor + "; "
-        "  border: 1px solid #2f3742; "
-        "  border-radius: 18px; "
-        "  padding: 12px 16px; "
-        "}"
-    );
     m_card->setMaximumWidth(760);
+    applyCardStyle();
 
     QGraphicsDropShadowEffect *shadow = new QGraphicsDropShadowEffect();
     shadow->setBlurRadius(18);
@@ -595,7 +671,7 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
     m_tokenLabel->setVisible(false);
     m_tokenLabel->setStyleSheet(
         "QLabel { "
-        "  color: #94a3b8; "
+        "  color: " + currentTheme().textMuted + "; "
         "  font-size: 11px; "
         "  padding: 0 2px; "
         "}"
@@ -606,18 +682,6 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
     m_copyBtn = new QPushButton("Copy", m_copyContainer);
     m_copyBtn->setIcon(makeLineIcon(AppIconGlyph::Copy));
     m_copyBtn->setIconSize(QSize(14, 14));
-    m_copyBtn->setStyleSheet(
-        "QPushButton { "
-        "  background-color: #334155; "
-        "  color: #ececf1; "
-        "  border: none; "
-        "  border-radius: 7px; "
-        "  padding: 5px 10px; "
-        "  font-size: 12px; "
-        "} "
-        "QPushButton:hover { background-color: #475569; } "
-        "QPushButton:disabled { background-color: #1f2937; color: #4ade80; }"
-    );
     m_copyBtn->setMaximumWidth(74);
     copyLayout->addWidget(m_copyBtn);
 
@@ -647,17 +711,6 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
     m_regenerateBtn = new QPushButton("Regenerate", m_card);
     m_regenerateBtn->setIcon(makeLineIcon(AppIconGlyph::Refresh));
     m_regenerateBtn->setIconSize(QSize(14, 14));
-    m_regenerateBtn->setStyleSheet(
-        "QPushButton { "
-        "  background-color: #334155; "
-        "  color: #ececf1; "
-        "  border: none; "
-        "  border-radius: 7px; "
-        "  padding: 5px 10px; "
-        "  font-size: 11px; "
-        "} "
-        "QPushButton:hover { background-color: #475569; }"
-    );
     m_regenerateBtn->setMaximumWidth(112);
     m_regenerateBtn->setVisible(false);
     copyLayout->addWidget(m_regenerateBtn);
@@ -668,17 +721,6 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
     m_branchBtn = new QPushButton("Branch", m_card);
     m_branchBtn->setIcon(makeLineIcon(AppIconGlyph::Branch));
     m_branchBtn->setIconSize(QSize(14, 14));
-    m_branchBtn->setStyleSheet(
-        "QPushButton { "
-        "  background-color: #334155; "
-        "  color: #ececf1; "
-        "  border: none; "
-        "  border-radius: 7px; "
-        "  padding: 5px 10px; "
-        "  font-size: 11px; "
-        "} "
-        "QPushButton:hover { background-color: #475569; }"
-    );
     m_branchBtn->setMaximumWidth(76);
     m_branchBtn->setVisible(false);
     copyLayout->addWidget(m_branchBtn);
@@ -689,17 +731,6 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
     m_editBtn = new QPushButton("Edit", m_card);
     m_editBtn->setIcon(makeLineIcon(AppIconGlyph::Edit));
     m_editBtn->setIconSize(QSize(14, 14));
-    m_editBtn->setStyleSheet(
-        "QPushButton { "
-        "  background-color: #334155; "
-        "  color: #ececf1; "
-        "  border: none; "
-        "  border-radius: 7px; "
-        "  padding: 5px 10px; "
-        "  font-size: 11px; "
-        "} "
-        "QPushButton:hover { background-color: #475569; }"
-    );
     m_editBtn->setMaximumWidth(62);
     m_editBtn->setVisible(false);
     copyLayout->addWidget(m_editBtn);
@@ -712,18 +743,138 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
     m_outerLayout->addLayout(rowLayout);
 
     m_timestampLabel = new QLabel(this);
-    m_timestampLabel->setStyleSheet("QLabel { color: #8e8e8e; font-size: 11px; padding: 2px 8px; }");
     m_timestampLabel->setVisible(false);
     m_timestampLabel->setAlignment(role == "user" ? Qt::AlignRight : Qt::AlignLeft);
     m_outerLayout->addWidget(m_timestampLabel);
 
     setMouseTracking(true);
     m_card->setMouseTracking(true);
+
+    // Applies every card-owned style from the current tokens.
+    applyTheme();
 }
 
 void ChatMessageCard::setTimestamp(const QDateTime &timestamp)
 {
     m_timestamp = timestamp;
+}
+
+void ChatMessageCard::applyTheme()
+{
+    const Theme &t = currentTheme();
+
+    applyCardStyle();
+
+    if (m_streamLabel) {
+        m_streamLabel->setStyleSheet(streamLabelStyle());
+    }
+    if (m_editField) {
+        m_editField->setStyleSheet(editFieldStyle());
+    }
+
+    if (m_tokenLabel) {
+        m_tokenLabel->setStyleSheet(
+            "QLabel { color: " + t.textMuted + "; font-size: 11px; padding: 0 2px; }");
+    }
+
+    const QString secondaryButton =
+        "QPushButton { "
+        "  background-color: " + t.chipBg + "; "
+        "  color: " + t.textStrong + "; "
+        "  border: 1px solid " + t.chipBorder + "; "
+        "  border-radius: 7px; "
+        "  padding: 5px 10px; "
+        "  font-size: 11px; "
+        "} "
+        "QPushButton:hover { background-color: " + t.surfaceAlt + "; }";
+
+    if (m_copyBtn) {
+        m_copyBtn->setStyleSheet(
+            "QPushButton { "
+            "  background-color: " + t.chipBg + "; "
+            "  color: " + t.textStrong + "; "
+            "  border: 1px solid " + t.chipBorder + "; "
+            "  border-radius: 7px; "
+            "  padding: 5px 10px; "
+            "  font-size: 12px; "
+            "} "
+            "QPushButton:hover { background-color: " + t.surfaceAlt + "; } "
+            "QPushButton:disabled { background-color: " + t.surface + "; color: " + t.success + "; }");
+    }
+    if (m_regenerateBtn) m_regenerateBtn->setStyleSheet(secondaryButton);
+    if (m_branchBtn) m_branchBtn->setStyleSheet(secondaryButton);
+    if (m_editBtn) m_editBtn->setStyleSheet(secondaryButton);
+
+    if (m_timestampLabel) {
+        m_timestampLabel->setStyleSheet(
+            "QLabel { color: " + t.textMuted + "; font-size: 11px; padding: 2px 8px; }");
+    }
+
+    if (m_avatar) {
+        m_avatar->applyTheme();
+    }
+
+    // Re-renders the markdown so the block labels pick up the new tokens.
+    setContentFontSize(m_contentFontSize);
+}
+
+QString ChatMessageCard::streamLabelStyle() const
+{
+    const Theme &t = currentTheme();
+    return QString(
+        "QLabel { "
+        "  color: " + t.textStrong + "; "
+        "  font-size: " + QString::number(m_contentFontSize) + "px; "
+        "  line-height: 1.6; "
+        "} "
+        "QLabel a { color: " + t.link + "; }");
+}
+
+QString ChatMessageCard::editFieldStyle() const
+{
+    const Theme &t = currentTheme();
+    return QString(
+        "QTextEdit { "
+        "  background-color: " + t.inputBg + "; "
+        "  color: " + t.textStrong + "; "
+        "  border: 1px solid " + t.borderStrong + "; "
+        "  border-radius: 6px; "
+        "  padding: 8px; "
+        "  font-size: " + QString::number(m_contentFontSize) + "px; "
+        "} " + scrollBarStyle());
+}
+
+void ChatMessageCard::applyCardStyle()
+{
+    const Theme &t = currentTheme();
+
+    QString bgColor = t.assistantBubble;
+    QString borderColor = t.assistantBubbleBorder;
+    QString textColor = t.textStrong;
+    if (m_role == "user") {
+        bgColor = t.userBubble;
+        borderColor = t.userBubbleBorder;
+        textColor = t.userBubbleText;
+    } else if (m_role == "error") {
+        bgColor = t.errorBubble;
+        borderColor = t.danger;
+        textColor = t.textStrong;
+    }
+
+    m_card->setStyleSheet(
+        "QFrame { "
+        "  background-color: " + bgColor + "; "
+        "  border: 1px solid " + borderColor + "; "
+        "  border-radius: 18px; "
+        "  padding: 12px 16px; "
+        "  color: " + textColor + "; "
+        "}"
+    );
+
+    // The shadow is invisible on a light background and too heavy on a dark one.
+    if (auto *shadow = qobject_cast<QGraphicsDropShadowEffect *>(m_card->graphicsEffect())) {
+        shadow->setColor(QColor(0, 0, 0, t.isDarkTheme ? 55 : 24));
+    }
 }
 
 void ChatMessageCard::enterEvent(QEnterEvent *event)
@@ -811,14 +962,7 @@ void ChatMessageCard::setStreaming(bool streaming)
             m_streamLabel->setWordWrap(true);
             m_streamLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
             m_streamLabel->setTextFormat(Qt::PlainText);
-            m_streamLabel->setStyleSheet(
-                "QLabel { "
-                "  color: #ececf1; "
-                "  font-size: " + QString::number(m_contentFontSize) + "px; "
-                "  line-height: 1.6; "
-                "} "
-                "QLabel a { color: #60a5fa; }"
-            );
+            m_streamLabel->setStyleSheet(streamLabelStyle());
             m_layout->insertWidget(0, m_streamLabel);
         }
         m_streamLabel->setText(m_fullContent);
@@ -880,22 +1024,15 @@ void ChatMessageCard::startEditing()
 {
     if (m_editField) return;
 
+    const Theme &t = currentTheme();
+
     m_editField = new QTextEdit(m_card);
     m_editField->setPlainText(m_fullContent);
     m_editField->setMaximumHeight(150);
-    m_editField->setStyleSheet(
-        "QTextEdit { "
-        "  background-color: #1a1a1a; "
-        "  color: #ececf1; "
-        "  border: 1px solid #4d4d4f; "
-        "  border-radius: 6px; "
-        "  padding: 8px; "
-        "  font-size: " + QString::number(m_contentFontSize) + "px; "
-        "}"
-    );
+    m_editField->setStyleSheet(editFieldStyle());
 
     QHBoxLayout *editBtnLayout = new QHBoxLayout();
-    editBtnLayout->setContentsMargins(0, 4, 0, 0);
+    editBtnLayout->setContentsMargins(0, 4, 0, 4);
     editBtnLayout->addStretch();
 
     QPushButton *saveBtn = new QPushButton("Save", m_card);
@@ -903,31 +1040,47 @@ void ChatMessageCard::startEditing()
     saveBtn->setIconSize(QSize(14, 14));
     saveBtn->setStyleSheet(
         "QPushButton { "
-        "  background-color: #005c4b; "
-        "  color: #ececf1; "
+        "  background-color: " + t.accent + "; "
+        "  color: " + t.accentText + "; "
         "  border: none; "
         "  border-radius: 4px; "
         "  padding: 4px 12px; "
         "  font-size: 11px; "
         "} "
-        "QPushButton:hover { background-color: #007a5e; }"
+        "QPushButton:hover { background-color: " + t.accentHover + "; }"
     );
     QPushButton *cancelBtn = new QPushButton("Cancel", m_card);
     cancelBtn->setIcon(makeLineIcon(AppIconGlyph::Cancel));
     cancelBtn->setIconSize(QSize(14, 14));
     cancelBtn->setStyleSheet(
         "QPushButton { "
-        "  background-color: #404040; "
-        "  color: #ececf1; "
-        "  border: none; "
+        "  background-color: " + t.surfaceAlt + "; "
+        "  color: " + t.textStrong + "; "
+        "  border: 1px solid " + t.borderStrong + "; "
         "  border-radius: 4px; "
         "  padding: 4px 12px; "
         "  font-size: 11px; "
         "} "
-        "QPushButton:hover { background-color: #505050; }"
+        "QPushButton:hover { background-color: " + t.scrollbarHover + "; }"
     );
     editBtnLayout->addWidget(cancelBtn);
     editBtnLayout->addWidget(saveBtn);
+    if (ThemeController *theme = themeController()) {
+        theme->registerStyle(saveBtn, []() {
+            const Theme &s = currentTheme();
+            return QString(
+                "QPushButton { background-color: " + s.accent + "; color: " + s.accentText + "; "
+                "border: none; border-radius: 4px; padding: 4px 12px; font-size: 11px; } "
+                "QPushButton:hover { background-color: " + s.accentHover + "; }");
+        });
+        theme->registerStyle(cancelBtn, []() {
+            const Theme &s = currentTheme();
+            return QString(
+                "QPushButton { background-color: " + s.surfaceAlt + "; color: " + s.textStrong + "; "
+                "border: 1px solid " + s.borderStrong + "; border-radius: 4px; padding: 4px 12px; font-size: 11px; } "
+                "QPushButton:hover { background-color: " + s.scrollbarHover + "; }");
+        });
+    }
 
     m_layout->insertWidget(0, m_editField);
     m_layout->insertLayout(1, editBtnLayout);
@@ -971,7 +1124,8 @@ QString ChatMessageCard::renderInlineMarkdown(const QString &text)
     result.replace(QRegularExpression("\\*(.+?)\\*"), "<i>\\1</i>");
     result.replace(QRegularExpression("__(.+?)__"), "<b>\\1</b>");
     result.replace(QRegularExpression("_(.+?)_"), "<i>\\1</i>");
-    result.replace(QRegularExpression("`(.+?)`"), "<code style='background-color:#1a1a1a; padding:2px 4px; border-radius:3px; font-family:monospace;'>\\1</code>");
+    result.replace(QRegularExpression("`(.+?)`"),
+                   "<code style='background-color:" + currentTheme().surfaceSunken + "; padding:2px 4px; border-radius:3px; font-family:monospace;'>\\1</code>");
     result.replace(QRegularExpression("\\[([^\\]]+)\\]\\(([^)]+)\\)"), "<a href='\\2' style='color:#60a5fa;'>\\1</a>");
 
     return result;
@@ -993,15 +1147,15 @@ void ChatMessageCard::addTextBlock(const QString &text)
         if (trimmed.startsWith("### ")) {
             if (inList) { html += "</ul>"; inList = false; }
             if (inOrderedList) { html += "</ol>"; inOrderedList = false; }
-            html += "<h3 style='color:#ececf1; font-size:16px; margin:8px 0 4px 0;'>" + renderInlineMarkdown(trimmed.mid(4)) + "</h3>";
+            html += "<h3 style='color:" + currentTheme().textStrong + "; font-size:16px; margin:8px 0 4px 0;'>" + renderInlineMarkdown(trimmed.mid(4)) + "</h3>";
         } else if (trimmed.startsWith("## ")) {
             if (inList) { html += "</ul>"; inList = false; }
             if (inOrderedList) { html += "</ol>"; inOrderedList = false; }
-            html += "<h2 style='color:#ececf1; font-size:18px; margin:10px 0 6px 0;'>" + renderInlineMarkdown(trimmed.mid(3)) + "</h2>";
+            html += "<h2 style='color:" + currentTheme().textStrong + "; font-size:18px; margin:10px 0 6px 0;'>" + renderInlineMarkdown(trimmed.mid(3)) + "</h2>";
         } else if (trimmed.startsWith("# ")) {
             if (inList) { html += "</ul>"; inList = false; }
             if (inOrderedList) { html += "</ol>"; inOrderedList = false; }
-            html += "<h1 style='color:#ececf1; font-size:20px; margin:12px 0 8px 0;'>" + renderInlineMarkdown(trimmed.mid(2)) + "</h1>";
+            html += "<h1 style='color:" + currentTheme().textStrong + "; font-size:20px; margin:12px 0 8px 0;'>" + renderInlineMarkdown(trimmed.mid(2)) + "</h1>";
         } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
             if (inOrderedList) { html += "</ol>"; inOrderedList = false; }
             if (!inList) { html += "<ul style='margin:4px 0; padding-left:20px;'>"; inList = true; }
@@ -1030,11 +1184,11 @@ void ChatMessageCard::addTextBlock(const QString &text)
     label->setWordWrap(true);
     label->setStyleSheet(
         "QLabel { "
-        "  color: #ececf1; "
+        "  color: " + currentTheme().textStrong + "; "
         "  font-size: " + QString::number(m_contentFontSize) + "px; "
         "  line-height: 1.75; "
         "} "
-        "QLabel a { color: #60a5fa; }"
+        "QLabel a { color: " + currentTheme().link + "; }"
     );
     label->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
     label->setOpenExternalLinks(true);
@@ -1051,17 +1205,21 @@ void ChatMessageCard::addCodeBlock(const QString &code, const QString &language)
     QTextEdit *codeEdit = new QTextEdit(codeContainer);
     codeEdit->setReadOnly(true);
     codeEdit->setPlainText(code);
+    const Theme &t = currentTheme();
+
     codeEdit->setStyleSheet(
         "QTextEdit { "
-        "  background-color: #1a1a1a; "
-        "  color: #e6e6e6; "
+        "  background-color: " + t.codeBg + "; "
+        "  color: " + t.codeText + "; "
+        "  selection-background-color: " + t.selection + "; "
+        "  selection-color: " + t.accentText + "; "
         "  font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace; "
         "  font-size: " + QString::number(qMax(10, m_contentFontSize - 1)) + "px; "
         "  border: none; "
         "  border-bottom-left-radius: 8px; "
         "  border-bottom-right-radius: 8px; "
         "  padding: 12px; "
-        "}"
+        "} " + scrollBarStyle()
     );
     codeEdit->setMaximumHeight(300);
 
@@ -1069,7 +1227,7 @@ void ChatMessageCard::addCodeBlock(const QString &code, const QString &language)
         QLabel *langLabel = new QLabel(language, codeContainer);
         langLabel->setStyleSheet(
             "QLabel { "
-            "  color: #8e8e8e; "
+            "  color: " + t.codeLanguageText + "; "
             "  font-size: 12px; "
             "  padding: 4px 8px; "
             "}"
@@ -1080,14 +1238,14 @@ void ChatMessageCard::addCodeBlock(const QString &code, const QString &language)
         copyBtn->setIconSize(QSize(14, 14));
         copyBtn->setStyleSheet(
             "QPushButton { "
-            "  background-color: #404040; "
-            "  color: #ececf1; "
-            "  border: none; "
+            "  background-color: " + t.surfaceAlt + "; "
+            "  color: " + t.textStrong + "; "
+            "  border: 1px solid " + t.borderStrong + "; "
             "  border-radius: 4px; "
             "  padding: 4px 12px; "
             "  font-size: 12px; "
             "} "
-            "QPushButton:hover { background-color: #505050; }"
+            "QPushButton:hover { background-color: " + t.scrollbarHover + "; }"
         );
         copyBtn->setMaximumWidth(60);
 
@@ -1098,7 +1256,8 @@ void ChatMessageCard::addCodeBlock(const QString &code, const QString &language)
         headerLayout->setContentsMargins(8, 4, 8, 4);
 
         QFrame *headerFrame = new QFrame(codeContainer);
-        headerFrame->setStyleSheet("QFrame { background-color: #1a1a1a; border-top-left-radius: 8px; border-top-right-radius: 8px; }");
+        headerFrame->setStyleSheet(
+            "QFrame { background-color: " + t.codeHeaderBg + "; border-top-left-radius: 8px; border-top-right-radius: 8px; }");
         headerFrame->setLayout(headerLayout);
 
         codeLayout->addWidget(headerFrame);
@@ -1185,30 +1344,31 @@ ChatSearchBar::ChatSearchBar(QWidget *parent)
     : QFrame(parent)
 {
     setFrameStyle(QFrame::StyledPanel);
+    const Theme &t = currentTheme();
     setStyleSheet(
         "QFrame { "
-        "  background-color: #2f2f2f; "
-        "  border: 1px solid #4d4d4f; "
+        "  background-color: " + t.surfaceAlt + "; "
+        "  border: 1px solid " + t.borderStrong + "; "
         "  border-radius: 6px; "
         "  padding: 4px; "
         "} "
         "QLineEdit { "
-        "  background-color: #1a1a1a; "
-        "  color: #ececf1; "
-        "  border: 1px solid #4d4d4f; "
+        "  background-color: " + t.inputBg + "; "
+        "  color: " + t.textStrong + "; "
+        "  border: 1px solid " + t.borderStrong + "; "
         "  border-radius: 4px; "
         "  padding: 4px 8px; "
         "  font-size: 13px; "
         "} "
         "QPushButton { "
-        "  background-color: #404040; "
-        "  color: #ececf1; "
-        "  border: none; "
+        "  background-color: " + t.surfaceAlt + "; "
+        "  color: " + t.textStrong + "; "
+        "  border: 1px solid " + t.borderStrong + "; "
         "  border-radius: 4px; "
         "  padding: 4px 8px; "
         "  font-size: 12px; "
         "} "
-        "QPushButton:hover { background-color: #505050; }"
+        "QPushButton:hover { background-color: " + t.scrollbarHover + "; }"
     );
 
     QHBoxLayout *layout = new QHBoxLayout(this);
@@ -1222,7 +1382,7 @@ ChatSearchBar::ChatSearchBar(QWidget *parent)
     connect(m_searchInput, &QLineEdit::textChanged, this, &ChatSearchBar::searchTextChanged);
 
     m_matchCount = new QLabel("0/0", this);
-    m_matchCount->setStyleSheet("QLabel { color: #8e8e8e; font-size: 12px; padding: 0 4px; }");
+    m_matchCount->setStyleSheet("QLabel { color: " + t.textMuted + "; font-size: 12px; padding: 0 4px; }");
     m_matchCount->setMaximumWidth(50);
 
     m_prevBtn = new QPushButton(this);
@@ -1304,11 +1464,18 @@ MainWindow::MainWindow(QWidget *parent)
     , m_scrollFollowTimer(new QTimer(this))
     , m_requestChatIndex(-1)
     , m_requestInFlight(false)
+    , m_theme(new ThemeController(this))
 {
     setWindowTitle("SimpleAIClient");
     setWindowIcon(makeLineIcon(AppIconGlyph::App, 256));
     resize(1200, 800);
     setAcceptDrops(true);
+
+    // The stored preference has to be known before setupUI so every widget is
+    // built with the correct tokens the first time.
+    m_theme->setDark(m_settings.value("darkTheme", true).toBool());
+    m_theme->applyPalette();
+    m_isDarkTheme = m_theme->isDark();
 
     setupUI();
     setupMenu();
@@ -1385,163 +1552,198 @@ MainWindow::MainWindow(QWidget *parent)
     });
 }
 
-void MainWindow::setupUI()
+QString scrollBarStyle()
 {
-    QString scrollbarStyle =
+    const Theme &t = currentTheme();
+    return
         "QScrollBar:vertical { "
-        "  background-color: #2f2f2f; "
+        "  background-color: " + t.surface + "; "
         "  width: 10px; "
         "  border-radius: 5px; "
         "  margin: 0px; "
         "} "
         "QScrollBar::handle:vertical { "
-        "  background-color: #555555; "
+        "  background-color: " + t.scrollbar + "; "
         "  border-radius: 5px; "
         "  min-height: 30px; "
         "} "
         "QScrollBar::handle:vertical:hover { "
-        "  background-color: #666666; "
+        "  background-color: " + t.scrollbarHover + "; "
         "} "
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical, "
-        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { "
-        "  height: 0px; "
+        "QScrollBar:horizontal { "
+        "  background-color: " + t.surface + "; "
+        "  height: 10px; "
+        "  border-radius: 5px; "
+        "  margin: 0px; "
+        "} "
+        "QScrollBar::handle:horizontal { "
+        "  background-color: " + t.scrollbar + "; "
+        "  border-radius: 5px; "
+        "  min-width: 30px; "
+        "} "
+        "QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page { "
+        "  height: 0px; width: 0px; "
         "  background: none; "
         "}";
+}
+
+void MainWindow::setupUI()
+{
+    // Registers a stylesheet builder so the widget follows theme switches.
+    const auto themed = [this](QWidget *w, const std::function<QString()> &builder) {
+        m_theme->registerStyle(w, builder);
+    };
+
+    themed(m_inputField, []() {
+        const Theme &t = currentTheme();
+        return
+            "QTextEdit { "
+            "  background-color: transparent; "
+            "  color: " + t.textStrong + "; "
+            "  border: none; "
+            "  font-size: 15px; "
+            "  selection-background-color: " + t.selection + "; "
+            "  selection-color: " + t.accentText + "; "
+            "} " + scrollBarStyle();
+    });
+
+    themed(m_modelCombo, []() {
+        const Theme &t = currentTheme();
+        return
+            "QComboBox { "
+            "  background-color: " + t.surfaceAlt + "; "
+            "  color: " + t.textStrong + "; "
+            "  border: 1px solid " + t.borderStrong + "; "
+            "  border-radius: 8px; "
+            "  padding: 8px 12px; "
+            "  font-size: 14px; "
+            "} "
+            "QComboBox::drop-down { border: none; padding-right: 10px; } "
+            "QComboBox QAbstractItemView { "
+            "  background-color: " + t.surfaceAlt + "; "
+            "  color: " + t.textStrong + "; "
+            "  selection-background-color: " + t.accent + "; "
+            "  selection-color: " + t.accentText + "; "
+            "  border: 1px solid " + t.borderStrong + "; "
+            "  font-size: 14px; "
+            "}";
+    });
+
+    themed(m_attachButton, []() {
+        const Theme &t = currentTheme();
+        return
+            "QToolButton { "
+            "  background-color: transparent; "
+            "  border: none; "
+            "  padding: 6px; "
+            "} "
+            "QToolButton:hover { background-color: " + t.surfaceAlt + "; border-radius: 18px; }";
+    });
+
+    themed(m_sendButton, []() {
+        const Theme &t = currentTheme();
+        return
+            "QToolButton { "
+            "  background-color: " + t.accent + "; "
+            "  border: none; "
+            "  border-radius: 20px; "
+            "  padding: 8px; "
+            "} "
+            "QToolButton:hover { background-color: " + t.accentHover + "; } "
+            "QToolButton:pressed { background-color: " + t.accentPressed + "; } "
+            "QToolButton:disabled { background-color: " + t.scrollbar + "; }";
+    });
 
     m_inputField->setPlaceholderText("Message SimpleAIClient...");
     m_inputField->setMaximumHeight(150);
     m_inputField->setMinimumHeight(44);
-    m_inputField->setStyleSheet(
-        "QTextEdit { "
-        "  background-color: transparent; "
-        "  color: #ececf1; "
-        "  border: none; "
-        "  font-size: 15px; "
-        "  selection-background-color: #404040; "
-        "} " + scrollbarStyle
-    );
     m_inputField->document()->setDocumentMargin(2);
 
     m_modelCombo->setEditable(true);
     m_modelCombo->setMinimumWidth(200);
     m_modelCombo->setMaximumWidth(350);
-    m_modelCombo->setStyleSheet(
-        "QComboBox { "
-        "  background-color: #2f2f2f; "
-        "  color: #ececf1; "
-        "  border: 1px solid #4d4d4f; "
-        "  border-radius: 8px; "
-        "  padding: 8px 12px; "
-        "  font-size: 14px; "
-        "} "
-        "QComboBox::drop-down { "
-        "  border: none; "
-        "  padding-right: 10px; "
-        "} "
-        "QComboBox QAbstractItemView { "
-        "  background-color: #2f2f2f; "
-        "  color: #ececf1; "
-        "  selection-background-color: #404040; "
-        "  font-size: 14px; "
-        "}"
-    );
 
     m_attachButton = new QToolButton;
     m_attachButton->setIcon(makeLineIcon(AppIconGlyph::Image));
     m_attachButton->setIconSize(QSize(20, 20));
     m_attachButton->setFixedSize(36, 36);
-    m_attachButton->setStyleSheet(
-        "QToolButton { "
-        "  background-color: transparent; "
-        "  border: none; "
-        "  padding: 6px; "
-        "} "
-        "QToolButton:hover { background-color: #404040; border-radius: 18px; }"
-    );
     m_attachButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
     connect(m_attachButton, &QToolButton::clicked, this, &MainWindow::onAttachImage);
 
     m_sendButton->setIcon(makeLineIcon(AppIconGlyph::Send));
     m_sendButton->setIconSize(QSize(20, 20));
     m_sendButton->setFixedSize(40, 40);
-    m_sendButton->setStyleSheet(
-        "QToolButton { "
-        "  background-color: #005c4b; "
-        "  border: none; "
-        "  border-radius: 20px; "
-        "  padding: 8px; "
-        "} "
-        "QToolButton:hover { background-color: #007a5e; } "
-        "QToolButton:pressed { background-color: #004d3f; } "
-        "QToolButton:disabled { background-color: #404040; }"
-    );
-
-    const QString panelSurface = "#16181c";
-    const QString panelBorder = "#2b3139";
-    const QString cardSurface = "#20242b";
-    const QString cardSurfaceAlt = "#262c34";
-    const QString accent = "#15803d";
-    const QString accentSoft = "#163e2a";
-    const QString textStrong = "#f3f4f6";
-    const QString textMuted = "#9ca3af";
 
     m_sidebar = new QWidget(this);
     // Keep the navigation rail stable so the chat list does not "breathe"
     // as the main panel content changes or the window is resized.
     m_sidebar->setFixedWidth(300);
-    m_sidebar->setStyleSheet(QString(
-        "QWidget { background-color: %1; color: %2; border-right: 1px solid %3; }")
-        .arg(panelSurface).arg(textStrong).arg(panelBorder));
+    themed(m_sidebar, []() {
+        const Theme &s = currentTheme();
+        return QString("QWidget { background-color: %1; color: %2; border-right: 1px solid %3; }")
+            .arg(s.sidebar).arg(s.textStrong).arg(s.border);
+    });
 
     QVBoxLayout *sidebarLayout = new QVBoxLayout(m_sidebar);
     sidebarLayout->setContentsMargins(18, 20, 18, 16);
     sidebarLayout->setSpacing(12);
 
     m_appTitle = new QLabel("SimpleAIClient", m_sidebar);
-    m_appTitle->setStyleSheet(QString(
-        "QLabel { color: %1; font-size: 22px; font-weight: 700; letter-spacing: 0.5px; padding: 0; }")
-        .arg(textStrong));
+    themed(m_appTitle, []() {
+        return QString("QLabel { color: %1; font-size: 22px; font-weight: 700; letter-spacing: 0.5px; padding: 0; }")
+            .arg(currentTheme().textStrong);
+    });
     sidebarLayout->addWidget(m_appTitle);
 
     QLabel *sidebarSubtitle = new QLabel("Fast local chat, without the clutter.", m_sidebar);
     sidebarSubtitle->setWordWrap(true);
-    sidebarSubtitle->setStyleSheet(QString(
-        "QLabel { color: %1; font-size: 12px; line-height: 1.4; padding-bottom: 4px; }")
-        .arg(textMuted));
+    themed(sidebarSubtitle, []() {
+        return QString("QLabel { color: %1; font-size: 12px; line-height: 1.4; padding-bottom: 4px; }")
+            .arg(currentTheme().textMuted);
+    });
     sidebarLayout->addWidget(sidebarSubtitle);
 
-    m_newChatButton->setStyleSheet(QString(
-        "QPushButton { background-color: %1; color: white; border: none; border-radius: 12px; "
-        "padding: 12px 14px; text-align: left; font-size: 14px; font-weight: 600; } "
-        "QPushButton:hover { background-color: #16a34a; } "
-        "QPushButton:pressed { background-color: #166534; }")
-        .arg(accent));
+    themed(m_newChatButton, []() {
+        const Theme &n = currentTheme();
+        return QString(
+            "QPushButton { background-color: %1; color: %5; border: none; border-radius: 12px; "
+            "padding: 12px 14px; text-align: left; font-size: 14px; font-weight: 600; } "
+            "QPushButton:hover { background-color: %2; } "
+            "QPushButton:pressed { background-color: %3; }")
+            .arg(n.accent).arg(n.accentHover).arg(n.accentPressed).arg(n.success).arg(n.accentText);
+    });
     m_newChatButton->setText("New Chat");
-    m_newChatButton->setIcon(makeLineIcon(AppIconGlyph::NewChat, 24, QColor("#ffffff")));
+    m_newChatButton->setIcon(makeLineIcon(AppIconGlyph::NewChat, 24, QColor(currentTheme().accentText)));
     m_newChatButton->setIconSize(QSize(18, 18));
     sidebarLayout->addWidget(m_newChatButton);
 
     m_searchField = new QLineEdit(m_sidebar);
     m_searchField->setPlaceholderText("Search chats");
     m_searchField->addAction(makeLineIcon(AppIconGlyph::Search), QLineEdit::LeadingPosition);
-    m_searchField->setStyleSheet(QString(
-        "QLineEdit { background-color: %1; color: %2; border: 1px solid %3; border-radius: 10px; "
-        "padding: 9px 12px; font-size: 13px; } "
-        "QLineEdit:focus { border: 1px solid %4; background-color: %5; }")
-        .arg(cardSurface).arg(textStrong).arg(panelBorder).arg(accent).arg(cardSurfaceAlt));
+    themed(m_searchField, []() {
+        const Theme &s = currentTheme();
+        return QString(
+            "QLineEdit { background-color: %1; color: %2; border: 1px solid %3; border-radius: 10px; "
+            "padding: 9px 12px; font-size: 13px; } "
+            "QLineEdit:focus { border: 1px solid %4; background-color: %5; }")
+            .arg(s.surfaceAlt).arg(s.textStrong).arg(s.border).arg(s.accent).arg(s.surfaceAlt);
+    });
     connect(m_searchField, &QLineEdit::textChanged, this, &MainWindow::filterChats);
     sidebarLayout->addWidget(m_searchField);
 
     QLabel *historyLabel = new QLabel("Recent Chats", m_sidebar);
-    historyLabel->setStyleSheet(QString(
-        "QLabel { color: %1; font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }")
-        .arg(textMuted));
+    themed(historyLabel, []() {
+        return QString("QLabel { color: %1; font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }")
+            .arg(currentTheme().textMuted);
+    });
     sidebarLayout->addWidget(historyLabel);
 
     QFrame *historyFrame = new QFrame(m_sidebar);
-    historyFrame->setStyleSheet(QString(
-        "QFrame { background-color: %1; border: 1px solid %2; border-radius: 16px; }")
-        .arg(cardSurface).arg(panelBorder));
+    themed(historyFrame, []() {
+        const Theme &h = currentTheme();
+        return QString("QFrame { background-color: %1; border: 1px solid %2; border-radius: 16px; }")
+            .arg(h.surfaceAlt).arg(h.border);
+    });
     QVBoxLayout *historyLayout = new QVBoxLayout(historyFrame);
     historyLayout->setContentsMargins(8, 8, 8, 8);
     historyLayout->setSpacing(0);
@@ -1557,7 +1759,9 @@ void MainWindow::setupUI()
     m_chatListScroll->setWidget(m_chatListContainer);
     m_chatListScroll->setWidgetResizable(true);
     m_chatListScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_chatListScroll->setStyleSheet("QScrollArea { border: none; background: transparent; }" + scrollbarStyle);
+    themed(m_chatListScroll, []() {
+        return "QScrollArea { border: none; background: transparent; }" + scrollBarStyle();
+    });
     historyLayout->addWidget(m_chatListScroll);
     sidebarLayout->addWidget(historyFrame, 1);
 
@@ -1567,15 +1771,19 @@ void MainWindow::setupUI()
     m_splitter->addWidget(m_sidebar);
 
     QWidget *mainPanel = new QWidget(this);
-    mainPanel->setStyleSheet(QString("background-color: #111418; color: %1;").arg(textStrong));
+    themed(mainPanel, []() {
+        return QString("background-color: %1; color: %2;").arg(currentTheme().window).arg(currentTheme().textStrong);
+    });
     QVBoxLayout *mainLayout = new QVBoxLayout(mainPanel);
     mainLayout->setContentsMargins(18, 18, 18, 14);
     mainLayout->setSpacing(12);
 
     QFrame *headerFrame = new QFrame(mainPanel);
-    headerFrame->setStyleSheet(QString(
-        "QFrame { background-color: #151a1f; border: 1px solid %1; border-radius: 18px; }")
-        .arg(panelBorder));
+    themed(headerFrame, []() {
+        const Theme &h = currentTheme();
+        return QString("QFrame { background-color: %1; border: 1px solid %2; border-radius: 18px; }")
+            .arg(h.surface).arg(h.border);
+    });
     QVBoxLayout *headerOuter = new QVBoxLayout(headerFrame);
     headerOuter->setContentsMargins(18, 16, 18, 14);
     headerOuter->setSpacing(12);
@@ -1586,34 +1794,44 @@ void MainWindow::setupUI()
     QVBoxLayout *headerTextLayout = new QVBoxLayout();
     headerTextLayout->setSpacing(3);
     m_headerTitle = new QLabel("New Chat", headerFrame);
-    m_headerTitle->setStyleSheet(QString(
-        "QLabel { color: %1; font-size: 22px; font-weight: 700; }").arg(textStrong));
+    themed(m_headerTitle, []() {
+        return QString("QLabel { color: %1; font-size: 22px; font-weight: 700; }").arg(currentTheme().textStrong);
+    });
     m_headerSubtitle = new QLabel("Start typing below. Model and profile stay available, but out of the way.", headerFrame);
     m_headerSubtitle->setWordWrap(true);
-    m_headerSubtitle->setStyleSheet(QString(
-        "QLabel { color: %1; font-size: 12px; line-height: 1.4; }").arg(textMuted));
+    themed(m_headerSubtitle, []() {
+        return QString("QLabel { color: %1; font-size: 12px; line-height: 1.4; }").arg(currentTheme().textMuted);
+    });
     headerTextLayout->addWidget(m_headerTitle);
     headerTextLayout->addWidget(m_headerSubtitle);
     headerTop->addLayout(headerTextLayout, 1);
 
     m_modelCombo->setMinimumWidth(220);
     m_modelCombo->setMaximumWidth(320);
-    m_modelCombo->setStyleSheet(QString(
-        "QComboBox { background-color: %1; color: %2; border: 1px solid %3; border-radius: 10px; "
-        "padding: 8px 12px; font-size: 13px; } "
-        "QComboBox::drop-down { border: none; padding-right: 10px; } "
-        "QComboBox QAbstractItemView { background-color: %1; color: %2; selection-background-color: %4; font-size: 13px; }")
-        .arg(cardSurface).arg(textStrong).arg(panelBorder).arg(accentSoft));
+    themed(m_modelCombo, []() {
+        const Theme &c = currentTheme();
+        return QString(
+            "QComboBox { background-color: %1; color: %2; border: 1px solid %3; border-radius: 10px; "
+            "padding: 8px 12px; font-size: 13px; } "
+            "QComboBox::drop-down { border: none; padding-right: 10px; } "
+            "QComboBox QAbstractItemView { background-color: %1; color: %2; "
+            "selection-background-color: %4; selection-color: %5; border: 1px solid %3; font-size: 13px; }")
+            .arg(c.surfaceAlt).arg(c.textStrong).arg(c.border).arg(c.accent).arg(c.accentText);
+    });
 
     m_profileCombo = new QComboBox(this);
     m_profileCombo->setMinimumWidth(140);
     m_profileCombo->setMaximumWidth(180);
-    m_profileCombo->setStyleSheet(QString(
-        "QComboBox { background-color: %1; color: %2; border: 1px solid %3; border-radius: 10px; "
-        "padding: 8px 12px; font-size: 13px; } "
-        "QComboBox::drop-down { border: none; padding-right: 10px; } "
-        "QComboBox QAbstractItemView { background-color: %1; color: %2; selection-background-color: %4; font-size: 13px; }")
-        .arg(cardSurface).arg(textStrong).arg(panelBorder).arg(accentSoft));
+    themed(m_profileCombo, []() {
+        const Theme &c = currentTheme();
+        return QString(
+            "QComboBox { background-color: %1; color: %2; border: 1px solid %3; border-radius: 10px; "
+            "padding: 8px 12px; font-size: 13px; } "
+            "QComboBox::drop-down { border: none; padding-right: 10px; } "
+            "QComboBox QAbstractItemView { background-color: %1; color: %2; "
+            "selection-background-color: %4; selection-color: %5; border: 1px solid %3; font-size: 13px; }")
+            .arg(c.surfaceAlt).arg(c.textStrong).arg(c.border).arg(c.accent).arg(c.accentText);
+    });
 
     QVBoxLayout *selectorLayout = new QVBoxLayout();
     selectorLayout->setSpacing(8);
@@ -1622,18 +1840,25 @@ void MainWindow::setupUI()
     headerTop->addLayout(selectorLayout);
     headerOuter->addLayout(headerTop);
 
-    const QString toggleStyle = QString(
-        "QCheckBox { color: %1; font-size: 12px; spacing: 6px; background-color: %2; "
-        "border: 1px solid %3; border-radius: 999px; padding: 6px 10px; } "
-        "QCheckBox::indicator { width: 12px; height: 12px; border-radius: 6px; border: 1px solid %4; background-color: transparent; } "
-        "QCheckBox::indicator:checked { background-color: %4; border: 1px solid %4; }")
-        .arg(textMuted).arg(cardSurface).arg(panelBorder).arg(accent);
+    const auto toggleStyle = []() {
+        const Theme &c = currentTheme();
+        return QString(
+            "QCheckBox { color: %1; font-size: 12px; spacing: 6px; background-color: %2; "
+            "border: 1px solid %3; border-radius: 999px; padding: 6px 10px; } "
+            "QCheckBox:disabled { color: %5; } "
+            "QCheckBox::indicator { width: 12px; height: 12px; border-radius: 6px; border: 1px solid %4; background-color: transparent; } "
+            "QCheckBox::indicator:checked { background-color: %4; border: 1px solid %4; }")
+            .arg(c.textMuted).arg(c.surfaceAlt).arg(c.border).arg(c.accent).arg(c.textFaint);
+    };
+    const auto themedToggle = [&](QCheckBox *box) {
+        themed(box, toggleStyle);
+    };
 
     QHBoxLayout *toggleRow = new QHBoxLayout();
     toggleRow->setSpacing(8);
 
     m_uncensoredFilter = new QCheckBox("Uncensored", this);
-    m_uncensoredFilter->setStyleSheet(toggleStyle);
+    themedToggle(m_uncensoredFilter);
     m_uncensoredFilter->setChecked(m_settings.value("uncensoredFilter", false).toBool());
     connect(m_uncensoredFilter, &QCheckBox::toggled, this, [this]() {
         m_settings.setValue("uncensoredFilter", m_uncensoredFilter->isChecked());
@@ -1642,7 +1867,7 @@ void MainWindow::setupUI()
     toggleRow->addWidget(m_uncensoredFilter);
 
     m_streamToggle = new QCheckBox("Streaming", this);
-    m_streamToggle->setStyleSheet(toggleStyle);
+    themedToggle(m_streamToggle);
     m_streamToggle->setChecked(m_settings.value("streamMode", true).toBool());
     m_apiClient->setStreaming(m_streamToggle->isChecked());
     connect(m_streamToggle, &QCheckBox::toggled, this, [this](bool checked) {
@@ -1652,7 +1877,7 @@ void MainWindow::setupUI()
     toggleRow->addWidget(m_streamToggle);
 
     m_webSearchToggle = new QCheckBox("Web Search", this);
-    m_webSearchToggle->setStyleSheet(toggleStyle);
+    themedToggle(m_webSearchToggle);
     m_webSearchToggle->setChecked(m_settings.value("webSearch", false).toBool());
     m_apiClient->setWebSearch(m_webSearchToggle->isChecked());
     connect(m_webSearchToggle, &QCheckBox::toggled, this, [this](bool checked) {
@@ -1663,7 +1888,7 @@ void MainWindow::setupUI()
     toggleRow->addWidget(m_webSearchToggle);
 
     m_autoScrollToggle = new QCheckBox("Auto Scroll", this);
-    m_autoScrollToggle->setStyleSheet(toggleStyle);
+    themedToggle(m_autoScrollToggle);
     m_autoScrollToggle->setChecked(m_settings.value("autoScroll", true).toBool());
     m_autoScroll = m_autoScrollToggle->isChecked();
     connect(m_autoScrollToggle, &QCheckBox::toggled, this, &MainWindow::onToggleAutoScroll);
@@ -1679,18 +1904,23 @@ void MainWindow::setupUI()
     connect(m_searchBar, &ChatSearchBar::findNext, this, &MainWindow::onFindNext);
     connect(m_searchBar, &ChatSearchBar::findPrevious, this, &MainWindow::onFindPrevious);
     connect(m_searchBar, &ChatSearchBar::closed, this, &MainWindow::hideSearchBar);
-    m_searchBar->setStyleSheet(QString(
-        "QFrame { background-color: %1; border: 1px solid %2; border-radius: 14px; padding: 6px; } "
-        "QLineEdit { background-color: #101418; color: %3; border: 1px solid %2; border-radius: 8px; padding: 6px 8px; font-size: 13px; } "
-        "QPushButton { background-color: %4; color: %3; border: none; border-radius: 7px; padding: 4px 8px; font-size: 12px; } "
-        "QPushButton:hover { background-color: %1; }")
-        .arg(cardSurface).arg(panelBorder).arg(textStrong).arg(cardSurfaceAlt));
+    themed(m_searchBar, []() {
+        const Theme &s = currentTheme();
+        return QString(
+            "QFrame { background-color: %1; border: 1px solid %2; border-radius: 14px; padding: 6px; } "
+            "QLineEdit { background-color: %3; color: %4; border: 1px solid %2; border-radius: 8px; padding: 6px 8px; font-size: 13px; } "
+            "QPushButton { background-color: %5; color: %4; border: 1px solid %2; border-radius: 7px; padding: 4px 8px; font-size: 12px; } "
+            "QPushButton:hover { background-color: %5; }")
+            .arg(s.surfaceAlt).arg(s.border).arg(s.inputBg).arg(s.textStrong).arg(s.surfaceAlt);
+    });
     mainLayout->addWidget(m_searchBar);
 
     m_scrollArea = new QScrollArea(mainPanel);
     m_scrollArea->setWidgetResizable(true);
     m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_scrollArea->setStyleSheet("QScrollArea { border: none; background-color: transparent; }" + scrollbarStyle);
+    themed(m_scrollArea, []() {
+        return "QScrollArea { border: none; background-color: transparent; }" + scrollBarStyle();
+    });
 
     m_chatContainer = new QWidget();
     m_chatContainer->setStyleSheet("background-color: transparent;");
@@ -1700,9 +1930,11 @@ void MainWindow::setupUI()
 
     m_welcomeWidget = new QWidget(m_chatContainer);
     m_welcomeWidget->setMaximumWidth(620);
-    m_welcomeWidget->setStyleSheet(QString(
-        "QWidget { background-color: %1; border: 1px solid %2; border-radius: 24px; }")
-        .arg(cardSurface).arg(panelBorder));
+    themed(m_welcomeWidget, []() {
+        const Theme &w = currentTheme();
+        return QString("QWidget { background-color: %1; border: 1px solid %2; border-radius: 24px; }")
+            .arg(w.surfaceAlt).arg(w.border);
+    });
     QVBoxLayout *welcomeLayout = new QVBoxLayout(m_welcomeWidget);
     welcomeLayout->setContentsMargins(28, 30, 28, 28);
     welcomeLayout->setAlignment(Qt::AlignCenter);
@@ -1710,21 +1942,24 @@ void MainWindow::setupUI()
 
     QLabel *welcomeEyebrow = new QLabel("READY WHEN YOU ARE", m_welcomeWidget);
     welcomeEyebrow->setAlignment(Qt::AlignCenter);
-    welcomeEyebrow->setStyleSheet(QString(
-        "QLabel { color: %1; font-size: 11px; font-weight: 700; letter-spacing: 2px; }")
-        .arg(textMuted));
+    themed(welcomeEyebrow, []() {
+        return QString("QLabel { color: %1; font-size: 11px; font-weight: 700; letter-spacing: 2px; }")
+            .arg(currentTheme().textMuted);
+    });
     welcomeLayout->addWidget(welcomeEyebrow);
 
     QLabel *welcomeTitle = new QLabel("Talk to the model, not the UI.", m_welcomeWidget);
-    welcomeTitle->setStyleSheet(QString(
-        "QLabel { color: %1; font-size: 30px; font-weight: 700; }").arg(textStrong));
+    themed(welcomeTitle, []() {
+        return QString("QLabel { color: %1; font-size: 30px; font-weight: 700; }").arg(currentTheme().textStrong);
+    });
     welcomeTitle->setAlignment(Qt::AlignCenter);
     welcomeLayout->addWidget(welcomeTitle);
 
     QLabel *welcomeSubtitle = new QLabel("Pick a model if you need to, then just type. Everything else stays quiet until you want it.", m_welcomeWidget);
     welcomeSubtitle->setWordWrap(true);
-    welcomeSubtitle->setStyleSheet(QString(
-        "QLabel { color: %1; font-size: 14px; line-height: 1.5; }").arg(textMuted));
+    themed(welcomeSubtitle, []() {
+        return QString("QLabel { color: %1; font-size: 14px; line-height: 1.5; }").arg(currentTheme().textMuted);
+    });
     welcomeSubtitle->setAlignment(Qt::AlignCenter);
     welcomeLayout->addWidget(welcomeSubtitle);
 
@@ -1768,23 +2003,28 @@ void MainWindow::setupUI()
     mainLayout->addWidget(m_scrollArea, 1);
 
     QFrame *inputFrame = new QFrame(mainPanel);
-    inputFrame->setStyleSheet(QString(
-        "QFrame { background-color: #151a1f; border: 1px solid %1; border-radius: 20px; }")
-        .arg(panelBorder));
+    themed(inputFrame, []() {
+        const Theme &i = currentTheme();
+        return QString("QFrame { background-color: %1; border: 1px solid %2; border-radius: 20px; }")
+            .arg(i.surface).arg(i.border);
+    });
     QVBoxLayout *inputWithCounter = new QVBoxLayout(inputFrame);
     inputWithCounter->setContentsMargins(18, 14, 18, 14);
     inputWithCounter->setSpacing(10);
 
     QLabel *composerHint = new QLabel("Enter to send, Shift+Enter for a new line.", inputFrame);
-    composerHint->setStyleSheet(QString(
-        "QLabel { color: %1; font-size: 11px; }").arg(textMuted));
+    themed(composerHint, []() {
+        return QString("QLabel { color: %1; font-size: 11px; }").arg(currentTheme().textMuted);
+    });
     inputWithCounter->addWidget(composerHint, 0, Qt::AlignLeft);
 
     QWidget *inputWrapper = new QWidget(inputFrame);
     inputWrapper->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    inputWrapper->setStyleSheet(QString(
-        "QWidget { background-color: %1; border: 1px solid %2; border-radius: 22px; }")
-        .arg(cardSurfaceAlt).arg(panelBorder));
+    themed(inputWrapper, []() {
+        const Theme &i = currentTheme();
+        return QString("QWidget { background-color: %1; border: 1px solid %2; border-radius: 22px; }")
+            .arg(i.surfaceAlt).arg(i.border);
+    });
     QVBoxLayout *inputWrapperLayout = new QVBoxLayout(inputWrapper);
     inputWrapperLayout->setContentsMargins(12, 12, 12, 10);
     inputWrapperLayout->setSpacing(8);
@@ -1793,9 +2033,11 @@ void MainWindow::setupUI()
     m_imagePreview->setMaximumHeight(72);
     m_imagePreview->setMaximumWidth(220);
     m_imagePreview->setScaledContents(true);
-    m_imagePreview->setStyleSheet(QString(
-        "QLabel { background-color: %1; border: 1px solid %2; border-radius: 10px; padding: 4px; }")
-        .arg(cardSurface).arg(panelBorder));
+    themed(m_imagePreview, []() {
+        const Theme &i = currentTheme();
+        return QString("QLabel { background-color: %1; border: 1px solid %2; border-radius: 10px; padding: 4px; }")
+            .arg(i.inputBg).arg(i.border);
+    });
     m_imagePreview->setVisible(false);
     m_imagePreview->setAlignment(Qt::AlignCenter);
     inputWrapperLayout->addWidget(m_imagePreview, 0, Qt::AlignLeft);
@@ -1812,9 +2054,13 @@ void MainWindow::setupUI()
     inputFooter->setContentsMargins(2, 0, 2, 0);
     inputFooter->setSpacing(8);
     QLabel *dropHint = new QLabel("You can also drag an image into the window.", inputWrapper);
-    dropHint->setStyleSheet(QString("QLabel { color: %1; font-size: 11px; }").arg(textMuted));
+    themed(dropHint, []() {
+        return QString("QLabel { color: %1; font-size: 11px; }").arg(currentTheme().textMuted);
+    });
     m_charCounter = new QLabel("0", inputFrame);
-    m_charCounter->setStyleSheet(QString("QLabel { color: %1; font-size: 11px; }").arg(textMuted));
+    themed(m_charCounter, []() {
+        return QString("QLabel { color: %1; font-size: 11px; }").arg(currentTheme().textMuted);
+    });
     inputFooter->addWidget(dropHint);
     inputFooter->addStretch();
     inputFooter->addWidget(m_charCounter);
@@ -1834,9 +2080,13 @@ void MainWindow::setupUI()
     setCentralWidget(m_splitter);
 
     m_statusBar = statusBar();
-    m_statusBar->setStyleSheet(QString(
-        "QStatusBar { background-color: %1; color: %2; font-size: 12px; border-top: 1px solid %3; }")
-        .arg(panelSurface).arg(textMuted).arg(panelBorder));
+    themed(m_statusBar, []() {
+        const Theme &s = currentTheme();
+        return QString("QStatusBar { background-color: %1; color: %2; font-size: 12px; border-top: 1px solid %3; } "
+                       "QStatusBar QLabel { color: %2; } "
+                       "QStatusBar::item { border: none; }")
+            .arg(s.sidebar).arg(s.textMuted).arg(s.border);
+    });
 
     m_statusConnection = new QLabel("Ready", m_statusBar);
     m_statusModel = new QLabel(m_statusBar);
@@ -1853,9 +2103,6 @@ void MainWindow::setupUI()
     m_statusBar->addPermanentWidget(m_statusTokens);
     m_statusBar->addPermanentWidget(m_statusResponseTime);
     m_statusBar->addPermanentWidget(m_statusModel);
-
-    m_isDarkTheme = m_settings.value("darkTheme", true).toBool();
-    applyTheme();
 }
 
 void MainWindow::setupMenu()
@@ -2889,12 +3136,21 @@ void MainWindow::showThinkingIndicator()
     m_thinkingIndicator->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_thinkingIndicator->setStyleSheet(
         "QLabel { "
-        "  color: #8e8e8e; "
+        "  color: " + currentTheme().textMuted + "; "
         "  font-size: 15px; "
         "  font-style: italic; "
         "  padding: 12px 16px; "
         "}"
     );
+    m_theme->registerStyle(m_thinkingIndicator, []() {
+        return QString(
+            "QLabel { "
+            "  color: " + currentTheme().textMuted + "; "
+            "  font-size: 15px; "
+            "  font-style: italic; "
+            "  padding: 12px 16px; "
+            "}");
+    });
 
     AvatarLabel *aiAvatar = new AvatarLabel("assistant", m_thinkingRowWidget);
     aiAvatar->setFixedSize(28, 28);
@@ -3513,9 +3769,10 @@ void MainWindow::onExportBackupSnapshot()
 
 void MainWindow::onToggleTheme()
 {
-    m_isDarkTheme = !m_isDarkTheme;
+    m_theme->setDark(!m_theme->isDark());
+    m_isDarkTheme = m_theme->isDark();
     m_settings.setValue("darkTheme", m_isDarkTheme);
-    applyTheme();
+    restyleCards();
 }
 
 void MainWindow::onRegenerateResponse(int messageIndex)
@@ -3656,40 +3913,26 @@ void MainWindow::onAdvancedSettings()
 
 void MainWindow::applyTheme()
 {
-    if (m_isDarkTheme) {
-        qApp->setStyle("Fusion");
-        QPalette darkPalette;
-        darkPalette.setColor(QPalette::Window, QColor(33, 33, 33));
-        darkPalette.setColor(QPalette::WindowText, QColor(236, 236, 241));
-        darkPalette.setColor(QPalette::Base, QColor(47, 47, 47));
-        darkPalette.setColor(QPalette::AlternateBase, QColor(42, 43, 50));
-        darkPalette.setColor(QPalette::ToolTipBase, QColor(47, 47, 47));
-        darkPalette.setColor(QPalette::ToolTipText, QColor(236, 236, 241));
-        darkPalette.setColor(QPalette::Text, QColor(236, 236, 241));
-        darkPalette.setColor(QPalette::Button, QColor(47, 47, 47));
-        darkPalette.setColor(QPalette::ButtonText, QColor(236, 236, 241));
-        darkPalette.setColor(QPalette::BrightText, QColor(236, 236, 241));
-        darkPalette.setColor(QPalette::Link, QColor(96, 165, 250));
-        darkPalette.setColor(QPalette::Highlight, QColor(0, 92, 75));
-        darkPalette.setColor(QPalette::HighlightedText, QColor(236, 236, 241));
-        qApp->setPalette(darkPalette);
-    } else {
-        qApp->setStyle("Fusion");
-        QPalette lightPalette;
-        lightPalette.setColor(QPalette::Window, QColor(245, 245, 245));
-        lightPalette.setColor(QPalette::WindowText, QColor(33, 33, 33));
-        lightPalette.setColor(QPalette::Base, QColor(255, 255, 255));
-        lightPalette.setColor(QPalette::AlternateBase, QColor(230, 230, 230));
-        lightPalette.setColor(QPalette::ToolTipBase, QColor(255, 255, 255));
-        lightPalette.setColor(QPalette::ToolTipText, QColor(33, 33, 33));
-        lightPalette.setColor(QPalette::Text, QColor(33, 33, 33));
-        lightPalette.setColor(QPalette::Button, QColor(255, 255, 255));
-        lightPalette.setColor(QPalette::ButtonText, QColor(33, 33, 33));
-        lightPalette.setColor(QPalette::BrightText, QColor(33, 33, 33));
-        lightPalette.setColor(QPalette::Link, QColor(0, 92, 75));
-        lightPalette.setColor(QPalette::Highlight, QColor(0, 92, 75));
-        lightPalette.setColor(QPalette::HighlightedText, QColor(255, 255, 255));
-        qApp->setPalette(lightPalette);
+    // setDark() drives the palette and re-invokes every registered stylesheet
+    // builder; the widgets created in setupUI register themselves there.
+    m_isDarkTheme = m_theme->isDark();
+    m_theme->applyPalette();
+    m_theme->refreshAll();
+    restyleCards();
+}
+
+void MainWindow::restyleCards()
+{
+    // Message cards are created per message and own their own styles, so they
+    // are not part of the controller's registry.
+    for (int i = 0; i < m_chatLayout->count(); ++i) {
+        QLayoutItem *item = m_chatLayout->itemAt(i);
+        if (auto *card = qobject_cast<ChatMessageCard *>(item->widget())) {
+            card->applyTheme();
+        }
+    }
+    if (m_streamingCard) {
+        m_streamingCard->applyTheme();
     }
 }
 
@@ -4437,20 +4680,24 @@ void MainWindow::showShortcutsDialog()
     table->verticalHeader()->setVisible(false);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    const Theme &t = currentTheme();
     table->setStyleSheet(
         "QTableWidget { "
-        "  background-color: #2f2f2f; "
-        "  color: #ececf1; "
-        "  gridline-color: #4d4d4f; "
-        "  border: 1px solid #4d4d4f; "
+        "  background-color: " + t.surfaceAlt + "; "
+        "  color: " + t.textStrong + "; "
+        "  gridline-color: " + t.border + "; "
+        "  border: 1px solid " + t.borderStrong + "; "
+        "  selection-background-color: " + t.accent + "; "
+        "  selection-color: " + t.accentText + "; "
         "  font-size: 13px; "
         "} "
         "QHeaderView::section { "
-        "  background-color: #1a1a1a; "
-        "  color: #ececf1; "
+        "  background-color: " + t.surfaceSunken + "; "
+        "  color: " + t.textStrong + "; "
         "  padding: 4px; "
-        "  border: 1px solid #4d4d4f; "
-        "}"
+        "  border: 1px solid " + t.borderStrong + "; "
+        "} "
+        + scrollBarStyle()
     );
 
     QList<QPair<QString, QString>> shortcuts = {

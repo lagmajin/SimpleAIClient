@@ -148,6 +148,7 @@ qt_add_executable(SimpleAIClient
     src/mainwindow.cpp
     src/apiclient.cpp
     src/credentialstore.cpp
+    src/theme.cpp
 )
 
 if(WIN32)
