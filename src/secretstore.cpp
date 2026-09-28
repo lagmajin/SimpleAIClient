@@ -1,4 +1,4 @@
-#include "credentialstore.h"
+#include "secretstore.h"
 
 #include <QByteArray>
 
@@ -9,15 +9,7 @@
 
 namespace {
 
-QString toBase64(const QByteArray &data)
-{
-    return QString::fromLatin1(data.toBase64());
-}
-
-QByteArray fromBase64(const QString &text)
-{
-    return QByteArray::fromBase64(text.toLatin1());
-}
+const char kPrefix[] = "enc:v1:";
 
 } // namespace
 
@@ -61,57 +53,94 @@ bool dpapiUnprotect(const QByteArray &cipher, QByteArray *out)
 
 } // namespace
 
-bool CredentialStore::isEncrypted(const QString &stored)
+bool SecretStore::isEncrypted(const QByteArray &stored)
 {
-    return stored.startsWith(QLatin1String("enc:v1:"));
+    return stored.startsWith(kPrefix);
 }
 
-QString CredentialStore::protect(const QString &plain)
+QByteArray SecretStore::protectBytes(const QByteArray &plain)
 {
     if (plain.isEmpty()) {
-        return QString();
+        return QByteArray();
     }
 
     QByteArray cipher;
-    if (dpapiProtect(plain.toUtf8(), &cipher)) {
-        return QLatin1String("enc:v1:") + toBase64(cipher);
+    if (dpapiProtect(plain, &cipher)) {
+        return QByteArray(kPrefix) + cipher.toBase64();
     }
     return plain;
 }
 
-QString CredentialStore::unprotect(const QString &stored)
+QByteArray SecretStore::unprotectBytes(const QByteArray &stored)
 {
     if (stored.isEmpty()) {
-        return QString();
+        return QByteArray();
     }
     if (!isEncrypted(stored)) {
         // Legacy plain-text value written by an older build.
         return stored;
     }
 
-    const QString payload = stored.mid(7);
     QByteArray plain;
-    if (dpapiUnprotect(fromBase64(payload), &plain)) {
-        return QString::fromUtf8(plain);
+    if (dpapiUnprotect(QByteArray::fromBase64(stored.mid(static_cast<int>(qstrlen(kPrefix)))), &plain)) {
+        return plain;
     }
-    return QString();
+    return QByteArray();
+}
+
+bool SecretStore::isEncrypted(const QString &stored)
+{
+    return isEncrypted(stored.toUtf8());
+}
+
+QString SecretStore::protect(const QString &plain)
+{
+    return QString::fromUtf8(protectBytes(plain.toUtf8()));
+}
+
+QString SecretStore::unprotect(const QString &stored)
+{
+    if (stored.isEmpty()) {
+        return QString();
+    }
+    return QString::fromUtf8(unprotectBytes(stored.toUtf8()));
 }
 
 #else // !Q_OS_WIN
 
-bool CredentialStore::isEncrypted(const QString &)
+bool SecretStore::isEncrypted(const QByteArray &)
 {
     return false;
 }
 
-QString CredentialStore::protect(const QString &plain)
+bool SecretStore::isEncrypted(const QString &)
+{
+    return false;
+}
+
+QByteArray SecretStore::protectBytes(const QByteArray &plain)
 {
     return plain;
 }
 
-QString CredentialStore::unprotect(const QString &stored)
+QByteArray SecretStore::unprotectBytes(const QByteArray &stored)
+{
+    return stored;
+}
+
+QString SecretStore::protect(const QString &plain)
+{
+    return plain;
+}
+
+QString SecretStore::unprotect(const QString &stored)
 {
     return stored;
 }
 
 #endif // Q_OS_WIN
+
+const char *SecretStore::prefix()
+{
+    return kPrefix;
+}

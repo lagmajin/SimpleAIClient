@@ -2173,13 +2173,12 @@ void MainWindow::setupMenu()
 
 void MainWindow::loadSettings()
 {
-    QString apiKey = CredentialStore::unprotect(m_settings.value("apiKey").toString());
+    QString apiKey = SecretStore::unprotect(m_settings.value("apiKey").toString());
 
     m_apiClient->setApiKey(apiKey);
     restoreModelSelection();
 
-    QString systemPrompt = m_settings.value("systemPrompt").toString();
-    m_apiClient->setSystemPrompt(systemPrompt);
+    m_apiClient->setSystemPrompt(SecretStore::unprotect(m_settings.value("systemPrompt").toString()));
 
     double temperature = m_settings.value("temperature", 0.7).toDouble();
     m_apiClient->setTemperature(temperature);
@@ -2475,9 +2474,11 @@ QJsonObject MainWindow::buildChatBackupSnapshot() const
                 messagesArray.append(msgObj);
             }
         } else {
-            QString data = m_settings.value(QString("chatMessages/%1").arg(chat.id)).toString();
+            const QByteArray stored = QByteArray::fromBase64(
+                m_settings.value(QString("chatMessages/%1").arg(chat.id)).toString().toLatin1());
+            const QByteArray data = SecretStore::unprotectBytes(stored);
             if (!data.isEmpty()) {
-                QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8());
+                QJsonDocument doc = QJsonDocument::fromJson(data);
                 if (doc.isArray()) {
                     messagesArray = doc.array();
                 }
@@ -2518,11 +2519,22 @@ bool MainWindow::loadChatBackupSnapshot(QJsonObject *snapshot) const
     const QByteArray raw = file.readAll();
     QJsonParseError err;
     QJsonDocument doc = QJsonDocument::fromJson(raw, &err);
-    if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+    if (err.error == QJsonParseError::NoError && doc.isObject()) {
+        // Legacy plain-text snapshot written before the backup was encrypted.
+        *snapshot = doc.object();
+        return true;
+    }
+
+    const QByteArray decoded = SecretStore::unprotectBytes(raw);
+    if (decoded.isEmpty()) {
+        return false;
+    }
+    const QJsonDocument decrypted = QJsonDocument::fromJson(decoded, &err);
+    if (err.error != QJsonParseError::NoError || !decrypted.isObject()) {
         return false;
     }
 
-    *snapshot = doc.object();
+    *snapshot = decrypted.object();
     return true;
 }
 
@@ -2539,7 +2551,12 @@ bool MainWindow::saveChatBackup()
         return false;
     }
 
-    file.write(doc.toJson(QJsonDocument::Indented));
+    // The snapshot is a full copy of every transcript, so it gets the same
+    // protection as the registry entries. An unwrapped file from an older
+    // build is still accepted by loadChatBackupSnapshot().
+    const QByteArray envelope = QString::fromLatin1(SecretStore::prefix())
+        .toUtf8() + doc.toJson(QJsonDocument::Compact);
+    file.write(SecretStore::protectBytes(envelope));
     if (!file.commit()) {
         return false;
     }
@@ -2617,7 +2634,8 @@ bool MainWindow::restoreChatFromBackup(const QString &chatId)
     }
 
     const QString messagesKey = QString("chatMessages/%1").arg(chatId);
-    m_settings.setValue(messagesKey, QString::fromUtf8(QJsonDocument(messagesArray).toJson(QJsonDocument::Compact)));
+    const QByteArray json = QJsonDocument(messagesArray).toJson(QJsonDocument::Compact);
+    m_settings.setValue(messagesKey, SecretStore::protectBytes(json).toBase64());
 
     for (int i = 0; i < m_chatSessions.size(); ++i) {
         if (m_chatSessions[i].id != chatId) {
@@ -2664,7 +2682,8 @@ void MainWindow::saveChatSessions()
     }
 
     QJsonDocument doc(sessionsArray);
-    m_settings.setValue("chatSessions", QString::fromUtf8(doc.toJson(QJsonDocument::Compact)));
+    m_settings.setValue("chatSessions",
+                        SecretStore::protect(QString::fromUtf8(doc.toJson(QJsonDocument::Compact))));
 
     // The backup re-serialises every chat, so coalesce the writes that a single
     // turn produces (send + finish, plus a retry) into one.
@@ -2679,7 +2698,9 @@ void MainWindow::saveChatSessions()
 
 void MainWindow::loadChatSessions()
 {
-    QString data = m_settings.value("chatSessions").toString();
+    // The index holds chat titles, which are derived from the first user
+    // message, so it is encrypted alongside the transcripts.
+    QString data = SecretStore::unprotect(m_settings.value("chatSessions").toString());
     if (data.isEmpty()) return;
 
     QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8());
@@ -2736,7 +2757,9 @@ void MainWindow::saveChatMessages(int index)
         messagesArray.append(msgObj);
     }
 
-    m_settings.setValue(QString("chatMessages/%1").arg(chat.id), QString::fromUtf8(QJsonDocument(messagesArray).toJson(QJsonDocument::Compact)));
+    const QByteArray json = QJsonDocument(messagesArray).toJson(QJsonDocument::Compact);
+    m_settings.setValue(QString("chatMessages/%1").arg(chat.id),
+                        SecretStore::protectBytes(json).toBase64());
 }
 
 void MainWindow::loadChatMessages(int index)
@@ -2747,9 +2770,11 @@ void MainWindow::loadChatMessages(int index)
     if (chat.messagesLoaded) return;
 
     chat.messages.clear();
-    QString data = m_settings.value(QString("chatMessages/%1").arg(chat.id)).toString();
+    const QByteArray stored = QByteArray::fromBase64(
+        m_settings.value(QString("chatMessages/%1").arg(chat.id)).toString().toLatin1());
+    const QByteArray data = SecretStore::unprotectBytes(stored);
     if (!data.isEmpty()) {
-        QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8());
+        QJsonDocument doc = QJsonDocument::fromJson(data);
         if (doc.isArray()) {
             for (const auto &msgVal : doc.array()) {
                 QJsonObject msgObj = msgVal.toObject();
@@ -3540,13 +3565,13 @@ void MainWindow::onRequestCancelled()
 
 void MainWindow::onSettings()
 {
-    const QString currentKey = CredentialStore::unprotect(m_settings.value("apiKey").toString());
+    const QString currentKey = SecretStore::unprotect(m_settings.value("apiKey").toString());
 
     bool ok;
     QString apiKey = QInputDialog::getText(this, "Settings", "Venice.ai API Key:",
                                            QLineEdit::Password, currentKey, &ok);
     if (ok) {
-        m_settings.setValue("apiKey", CredentialStore::protect(apiKey));
+        m_settings.setValue("apiKey", SecretStore::protect(apiKey));
         m_apiClient->setApiKey(apiKey);
         fetchModels();
     }
@@ -3752,6 +3777,8 @@ void MainWindow::onExportBackupSnapshot()
         return;
     }
 
+    // An explicit export stays readable on purpose: the user picked this path,
+    // and loadChatBackupSnapshot() accepts both the encrypted and plain form.
     QJsonDocument doc(buildChatBackupSnapshot());
     QSaveFile file(filePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
@@ -3762,6 +3789,13 @@ void MainWindow::onExportBackupSnapshot()
     file.write(doc.toJson(QJsonDocument::Indented));
     if (!file.commit()) {
         QMessageBox::warning(this, "Export Failed", "Could not finalise file: " + filePath);
+        return;
+    }
+
+    if (!recoverableChatIndices().isEmpty()) {
+        QMessageBox::information(this, "Export Complete",
+            "Backup snapshot exported to:\n" + filePath +
+            "\n\nIt contains your chat transcripts in plain text. Store it accordingly.");
         return;
     }
     QMessageBox::information(this, "Export Complete", "Backup snapshot exported to:\n" + filePath);
@@ -3869,7 +3903,7 @@ void MainWindow::onAdvancedSettings()
     QFormLayout *formLayout = new QFormLayout();
     formLayout->setSpacing(12);
 
-    QString currentPrompt = m_settings.value("systemPrompt").toString();
+    QString currentPrompt = SecretStore::unprotect(m_settings.value("systemPrompt").toString());
     QTextEdit *systemPromptEdit = new QTextEdit(&dialog);
     systemPromptEdit->setPlainText(currentPrompt);
     systemPromptEdit->setMaximumHeight(100);
@@ -3901,7 +3935,7 @@ void MainWindow::onAdvancedSettings()
     layout->addWidget(buttonBox);
 
     if (dialog.exec() == QDialog::Accepted) {
-        m_settings.setValue("systemPrompt", systemPromptEdit->toPlainText());
+        m_settings.setValue("systemPrompt", SecretStore::protect(systemPromptEdit->toPlainText()));
         m_settings.setValue("temperature", tempSpin->value());
         m_settings.setValue("maxTokens", maxTokensSpin->value());
 
@@ -4062,7 +4096,7 @@ void MainWindow::saveDraft()
 
     QString draft = m_inputField->toPlainText();
     QString key = QString("draft_%1").arg(m_chatSessions[m_currentChatIndex].id);
-    m_settings.setValue(key, draft);
+    m_settings.setValue(key, SecretStore::protect(draft));
 }
 
 void MainWindow::loadDraft()
@@ -4070,7 +4104,7 @@ void MainWindow::loadDraft()
     if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return;
 
     QString key = QString("draft_%1").arg(m_chatSessions[m_currentChatIndex].id);
-    QString draft = m_settings.value(key).toString();
+    QString draft = SecretStore::unprotect(m_settings.value(key).toString());
     m_inputField->blockSignals(true);
     m_inputField->setPlainText(draft);
     m_inputField->blockSignals(false);
@@ -4176,6 +4210,8 @@ void MainWindow::loadProfiles()
     m_profiles.clear();
     m_profileCombo->clear();
 
+    // Only the API keys inside are protected individually, so the profile
+    // document itself stays plain and a corrupted key cannot hide the rest.
     QString data = m_settings.value("apiProfiles").toString();
     if (!data.isEmpty()) {
         QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8());
@@ -4184,9 +4220,14 @@ void MainWindow::loadProfiles()
                 QJsonObject obj = val.toObject();
                 ApiProfile profile;
                 profile.name = obj["name"].toString();
-                profile.apiKey = CredentialStore::unprotect(obj["apiKey"].toString());
+                profile.apiKey = SecretStore::unprotect(obj["apiKey"].toString());
                 profile.model = obj["model"].toString();
+                // A system prompt can carry confidential context, so it is
+                // protected too; an empty one is stored unprotected.
                 profile.systemPrompt = obj["systemPrompt"].toString();
+                if (SecretStore::isEncrypted(obj["systemPrompt"].toString())) {
+                    profile.systemPrompt = SecretStore::unprotect(obj["systemPrompt"].toString());
+                }
                 profile.temperature = obj["temperature"].toDouble();
                 profile.maxTokens = obj["maxTokens"].toInt();
                 m_profiles.append(profile);
@@ -4197,9 +4238,9 @@ void MainWindow::loadProfiles()
     if (m_profiles.isEmpty()) {
         ApiProfile defaultProfile;
         defaultProfile.name = "Default";
-        defaultProfile.apiKey = CredentialStore::unprotect(m_settings.value("apiKey").toString());
+        defaultProfile.apiKey = SecretStore::unprotect(m_settings.value("apiKey").toString());
         defaultProfile.model = m_settings.value("model", "venice-uncensored").toString();
-        defaultProfile.systemPrompt = m_settings.value("systemPrompt").toString();
+        defaultProfile.systemPrompt = SecretStore::unprotect(m_settings.value("systemPrompt").toString());
         defaultProfile.temperature = m_settings.value("temperature", 0.7).toDouble();
         defaultProfile.maxTokens = m_settings.value("maxTokens", 0).toInt();
         m_profiles.append(defaultProfile);
@@ -4223,9 +4264,9 @@ void MainWindow::saveProfiles()
     for (const auto &profile : m_profiles) {
         QJsonObject obj;
         obj["name"] = profile.name;
-        obj["apiKey"] = CredentialStore::protect(profile.apiKey);
+        obj["apiKey"] = SecretStore::protect(profile.apiKey);
         obj["model"] = profile.model;
-        obj["systemPrompt"] = profile.systemPrompt;
+        obj["systemPrompt"] = SecretStore::protect(profile.systemPrompt);
         obj["temperature"] = profile.temperature;
         obj["maxTokens"] = profile.maxTokens;
         arr.append(obj);

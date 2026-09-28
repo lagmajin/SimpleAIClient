@@ -27,7 +27,7 @@
 #include <QDateTime>
 #include <QCloseEvent>
 #include <QSoundEffect>
-#include "credentialstore.h"
+#include "secretstore.h"
 #include "theme.h"
 #include <QJsonObject>
 #include "apiclient.h"

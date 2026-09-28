@@ -147,7 +147,7 @@ qt_add_executable(SimpleAIClient
     src/main.cpp
     src/mainwindow.cpp
     src/apiclient.cpp
-    src/credentialstore.cpp
+    src/secretstore.cpp
     src/theme.cpp
 )
 
