@@ -47,6 +47,9 @@ signals:
     void requestCancelled();
     void errorOccurred(const QString &error);
     void modelsFetched(const QStringList &models);
+    // Separate from errorOccurred so a model-list failure is not mistaken for a
+    // failed chat turn by the retry handler.
+    void modelsFetchFailed(const QString &error);
 
 private:
     void shutdownActiveRequest();

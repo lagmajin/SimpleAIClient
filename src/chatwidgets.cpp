@@ -235,10 +235,6 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
     m_layout->setContentsMargins(12, 12, 12, 12);
     m_layout->setSpacing(8);
 
-    if (!content.isEmpty()) {
-        renderMarkdown(content);
-    }
-
     if (role == "user") {
         rowLayout->addStretch();
         rowLayout->addWidget(m_card, 0, Qt::AlignRight);
@@ -326,6 +322,17 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
         startEditing();
     });
 
+    // The copy container is registered before the body so the blocks append
+    // after it, then moved back to the bottom so the actions sit under the
+    // message. It has to be the layout's last item: rebuildContent() treats
+    // "one item left" as the sentinel to keep.
+    m_layout->addWidget(m_copyContainer);
+
+    if (!m_fullContent.isEmpty()) {
+        renderMarkdown(m_fullContent);
+    }
+
+    m_layout->removeWidget(m_copyContainer);
     m_layout->addWidget(m_copyContainer);
 
     m_outerLayout->addLayout(rowLayout);
@@ -402,8 +409,12 @@ void ChatMessageCard::applyTheme()
         m_avatar->applyTheme();
     }
 
-    // Re-renders the markdown so the block labels pick up the new tokens.
-    setContentFontSize(m_contentFontSize);
+    // Re-render so the block labels pick up the new tokens. Going through
+    // setContentFontSize() would be a no-op, because it returns early when the
+    // size is unchanged and that is the case on a theme switch.
+    if (!m_isStreaming) {
+        rebuildContent();
+    }
 }
 
 QString ChatMessageCard::streamLabelStyle() const
@@ -498,32 +509,13 @@ void ChatMessageCard::appendContent(const QString &content)
 
 void ChatMessageCard::setContentFontSize(int pixels)
 {
-    if (m_contentFontSize == pixels) {
-        return;
-    }
     m_contentFontSize = pixels;
 
     if (m_streamLabel) {
-        m_streamLabel->setStyleSheet(
-            "QLabel { "
-            "  color: #ececf1; "
-            "  font-size: " + QString::number(m_contentFontSize) + "px; "
-            "  line-height: 1.6; "
-            "} "
-            "QLabel a { color: #60a5fa; }"
-        );
+        m_streamLabel->setStyleSheet(streamLabelStyle());
     }
     if (m_editField) {
-        m_editField->setStyleSheet(
-            "QTextEdit { "
-            "  background-color: #1a1a1a; "
-            "  color: #ececf1; "
-            "  border: 1px solid #4d4d4f; "
-            "  border-radius: 6px; "
-            "  padding: 8px; "
-            "  font-size: " + QString::number(m_contentFontSize) + "px; "
-            "}"
-        );
+        m_editField->setStyleSheet(editFieldStyle());
     }
     if (!m_isStreaming) {
         rebuildContent();
@@ -624,6 +616,7 @@ void ChatMessageCard::startEditing()
     editBtnLayout->addStretch();
 
     QPushButton *saveBtn = new QPushButton("Save", m_card);
+    m_saveBtn = saveBtn;
     saveBtn->setIcon(makeLineIcon(AppIconGlyph::Save));
     saveBtn->setIconSize(QSize(14, 14));
     saveBtn->setStyleSheet(
@@ -638,6 +631,7 @@ void ChatMessageCard::startEditing()
         "QPushButton:hover { background-color: " + t.accentHover + "; }"
     );
     QPushButton *cancelBtn = new QPushButton("Cancel", m_card);
+    m_cancelBtn = cancelBtn;
     cancelBtn->setIcon(makeLineIcon(AppIconGlyph::Cancel));
     cancelBtn->setIconSize(QSize(14, 14));
     cancelBtn->setStyleSheet(
@@ -673,18 +667,37 @@ void ChatMessageCard::startEditing()
     m_layout->insertWidget(0, m_editField);
     m_layout->insertLayout(1, editBtnLayout);
 
+    // Both lambdas dereference m_editField, which a rebuild during editing
+    // (font size, theme switch, in-chat search) has already deleted, so they
+    // must bail out when the pointer is gone.
     connect(saveBtn, &QPushButton::clicked, [this]() {
-        QString newContent = m_editField->toPlainText().trimmed();
+        if (!m_editField) return;
+        const QString newContent = m_editField->toPlainText().trimmed();
         if (!newContent.isEmpty()) {
             emit editRequested(m_messageIndex, newContent);
         }
     });
     connect(cancelBtn, &QPushButton::clicked, [this]() {
+        if (!m_editField) return;
         m_layout->removeWidget(m_editField);
         delete m_editField;
         m_editField = nullptr;
-        QLayoutItem *item = m_layout->takeAt(1);
-        if (item) {
+        // QWidgetItem's destructor is a no-op, so deleting the row's layout
+        // alone would leave the buttons parented to the card, painting over
+        // the message. They are collected through their own pointers, which
+        // avoids walking the row's addStretch() QSpacerItem.
+        if (m_saveBtn) {
+            m_saveBtn->disconnect();
+            delete m_saveBtn;
+            m_saveBtn = nullptr;
+        }
+        if (m_cancelBtn) {
+            m_cancelBtn->disconnect();
+            delete m_cancelBtn;
+            m_cancelBtn = nullptr;
+        }
+        while (m_layout->count() > 1) {
+            QLayoutItem *item = m_layout->takeAt(1);
             delete item->layout();
             delete item;
         }
@@ -693,9 +706,33 @@ void ChatMessageCard::startEditing()
 
 void ChatMessageCard::rebuildContent()
 {
+    // A rebuild always ends editing: the field and its button row go away, so
+    // the next Edit starts clean. The row is torn down through the buttons'
+    // own pointers, which are stored at creation: m_card->findChildren() also
+    // returns the Copy/Regenerate/Branch/Edit buttons, and the nested layout
+    // must not be walked because the row begins with addStretch(), whose
+    // QSpacerItem has no layout() behind it.
+    if (m_saveBtn) {
+        m_saveBtn->disconnect();
+        delete m_saveBtn;
+        m_saveBtn = nullptr;
+    }
+    if (m_cancelBtn) {
+        m_cancelBtn->disconnect();
+        delete m_cancelBtn;
+        m_cancelBtn = nullptr;
+    }
+
     while (m_layout->count() > 1) {
         QLayoutItem *item = m_layout->takeAt(0);
-        delete item->widget();
+        if (item->widget()) {
+            // The edit field is deleted here, so the cached pointer has to go
+            // with it or applyTheme()/startEditing() would use freed memory.
+            if (item->widget() == m_editField) {
+                m_editField = nullptr;
+            }
+            delete item->widget();
+        }
         delete item;
     }
 
@@ -708,16 +745,57 @@ QString ChatMessageCard::renderInlineMarkdown(const QString &text)
     // parsed as rich text (`a < b`, a literal `<b>`, `&nbsp;`, ...).
     QString result = text.toHtmlEscaped();
 
+    // Links are lifted out before the emphasis rules run, because a URL such as
+    // .../Foo_bar_baz would otherwise be rewritten to Foo<i>bar</i>baz and the
+    // tag would end up inside the href. They are restored last.
+    static const QRegularExpression linkPattern("\\[([^\\]]+)\\]\\(([^)\\s]+)\\)");
+    QStringList links;
+    QString withPlaceholders;
+    int cursor = 0;
+    auto linkIt = linkPattern.globalMatch(result);
+    while (linkIt.hasNext()) {
+        const QRegularExpressionMatch match = linkIt.next();
+        withPlaceholders += result.mid(cursor, match.capturedStart(0) - cursor);
+        // The placeholder holds no markup characters, so the emphasis and code
+        // rules cannot match inside it.
+        withPlaceholders += QChar(0x01) + QString::number(links.size()) + QChar(0x02);
+        links << makeLinkHtml(match.captured(1), match.captured(2));
+        cursor = match.capturedEnd(0);
+    }
+    withPlaceholders += result.mid(cursor);
+    result = withPlaceholders;
+
     result.replace(QRegularExpression("\\*\\*(.+?)\\*\\*"), "<b>\\1</b>");
-    result.replace(QRegularExpression("\\*(.+?)\\*"), "<i>\\1</i>");
     result.replace(QRegularExpression("__(.+?)__"), "<b>\\1</b>");
+    result.replace(QRegularExpression("\\*(.+?)\\*"), "<i>\\1</i>");
     result.replace(QRegularExpression("_(.+?)_"), "<i>\\1</i>");
+    // Code spans last, so link syntax inside backticks stays literal.
     result.replace(QRegularExpression("`(.+?)`"),
                    "<code style='background-color:" + currentTheme().surfaceSunken + "; padding:2px 4px; border-radius:3px; font-family:monospace;'>\\1</code>");
-    result.replace(QRegularExpression("\\[([^\\]]+)\\]\\(([^)]+)\\)"), "<a href='\\2' style='color:#60a5fa;'>\\1</a>");
 
+    for (int i = 0; i < links.size(); ++i) {
+        result.replace(QChar(0x01) + QString::number(i) + QChar(0x02), links.at(i));
+    }
     return result;
 }
+
+QString ChatMessageCard::makeLinkHtml(const QString &text, const QString &url)
+{
+    // toHtmlEscaped() does not escape the apostrophe, and the href is emitted
+    // inside single quotes, so a URL containing one would break out of the
+    // attribute. Only http(s)/mailto reach QDesktopServices::openUrl via
+    // setOpenExternalLinks().
+    static const QStringList allowedSchemes = {"http", "https", "mailto"};
+
+    const QUrl parsed = QUrl(url, QUrl::StrictMode);
+    const QString scheme = parsed.scheme().toLower();
+    if (!allowedSchemes.contains(scheme)) {
+        // Not a link: show the raw text so nothing is silently swallowed.
+        return text + " (" + url + ")";
+    }
+
+    const QString safeUrl = QString(url).replace("&", "&amp;").replace("'", "&#39;");
+    return "<a href='" + safeUrl + "' style='color:" + currentTheme().link + ";'>" + text + "</a>";}
 
 void ChatMessageCard::addTextBlock(const QString &text)
 {
@@ -780,7 +858,7 @@ void ChatMessageCard::addTextBlock(const QString &text)
     );
     label->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
     label->setOpenExternalLinks(true);
-    m_layout->insertWidget(m_layout->count() - 1, label);
+    m_layout->addWidget(label);
 }
 
 void ChatMessageCard::addCodeBlock(const QString &code, const QString &language)
@@ -862,7 +940,10 @@ void ChatMessageCard::addCodeBlock(const QString &code, const QString &language)
     }
 
     codeLayout->addWidget(codeEdit);
-    m_layout->insertWidget(m_layout->count() - 1, codeContainer);
+    // Append: m_copyContainer is the last item, so "count() - 1" would be
+    // correct, but it silently degrades to "insert at 0" if the container is
+    // ever not present, which reversed the document order.
+    m_layout->addWidget(codeContainer);
 }
 
 void ChatMessageCard::renderMarkdown(const QString &text)
@@ -903,19 +984,49 @@ void ChatMessageCard::highlightText(const QString &text)
         return;
     }
 
+    // label->text() is the HTML source, not plain text, so a naive replace also
+    // hits style attributes and shreds the tags. Walk the string instead: text
+    // runs between '<' and '>' are eligible, tags are copied verbatim.
+    const Theme &t = currentTheme();
     const QRegularExpression regex("(" + QRegularExpression::escape(text) + ")", QRegularExpression::CaseInsensitiveOption);
-    const QString mark = "<mark style='background-color:#fbbf24;color:#000;'>\\1</mark>";
+    const QString openMark = "<mark style='background-color:" + t.warning + "; color:" + t.accentText + ";'>";
+    const QString closeMark = "</mark>";
+
     const auto labels = m_card->findChildren<QLabel*>();
     for (QLabel *label : labels) {
         if (label == m_tokenLabel || label == m_timestampLabel) {
             continue;
         }
-        QString labelText = label->text();
+        const QString labelText = label->text();
         if (labelText.isEmpty()) {
             continue;
         }
-        labelText.replace(regex, mark);
-        label->setText(labelText);
+
+        QString marked;
+        marked.reserve(labelText.size() + 32);
+        int cursor = 0;
+        while (cursor < labelText.size()) {
+            const int tagStart = labelText.indexOf('<', cursor);
+            if (tagStart < 0) {
+                marked += labelText.mid(cursor).replace(regex, openMark + "\\1" + closeMark);
+                break;
+            }
+            // Plain text before the tag.
+            marked += labelText.mid(cursor, tagStart - cursor)
+                          .replace(regex, openMark + "\\1" + closeMark);
+            const int tagEnd = labelText.indexOf('>', tagStart);
+            if (tagEnd < 0) {
+                marked += labelText.mid(tagStart);
+                break;
+            }
+            // The tag itself, including any style attribute.
+            marked += labelText.mid(tagStart, tagEnd - tagStart + 1);
+            cursor = tagEnd + 1;
+        }
+
+        if (marked != labelText) {
+            label->setText(marked);
+        }
     }
 }
 

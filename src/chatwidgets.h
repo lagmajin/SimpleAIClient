@@ -16,6 +16,8 @@
 #include <QObject>
 #include <QPushButton>
 #include <QTextEdit>
+#include <QRegularExpression>
+#include <QStringList>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -98,6 +100,7 @@ private:
     QString streamLabelStyle() const;
     QString editFieldStyle() const;
     QString renderInlineMarkdown(const QString &text);
+    static QString makeLinkHtml(const QString &text, const QString &url);
     void addCodeBlock(const QString &code, const QString &language);
     void addTextBlock(const QString &text);
     void rebuildContent();
@@ -117,6 +120,10 @@ private:
     QPushButton *m_branchBtn;
     QPushButton *m_editBtn;
     QTextEdit *m_editField;
+    // The edit row's buttons, owned by m_card. A rebuild deletes them, so the
+    // cached pointers are cleared with them.
+    QPushButton *m_saveBtn = nullptr;
+    QPushButton *m_cancelBtn = nullptr;
     int m_messageIndex;
     bool m_isStreaming;
     QDateTime m_timestamp;

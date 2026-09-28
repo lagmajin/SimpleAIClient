@@ -133,7 +133,7 @@ void ApiClient::fetchModels()
 
     connect(thread, &QThread::started, worker, &ModelsRequestWorker::execute);
     connect(worker, &ModelsRequestWorker::modelsFetched, this, &ApiClient::modelsFetched);
-    connect(worker, &ModelsRequestWorker::errorOccurred, this, &ApiClient::errorOccurred);
+    connect(worker, &ModelsRequestWorker::errorOccurred, this, &ApiClient::modelsFetchFailed);
     connect(worker, &ModelsRequestWorker::modelsFetched, thread, &QThread::quit);
     connect(worker, &ModelsRequestWorker::errorOccurred, thread, &QThread::quit);
     connect(thread, &QThread::finished, worker, &QObject::deleteLater);

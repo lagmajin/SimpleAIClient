@@ -126,9 +126,10 @@ bool MainWindow::saveChatBackup()
     // The snapshot is a full copy of every transcript, so it gets the same
     // protection as the registry entries. An unwrapped file from an older
     // build is still accepted by loadChatBackupSnapshot().
-    const QByteArray envelope = QString::fromLatin1(SecretStore::prefix())
-        .toUtf8() + doc.toJson(QJsonDocument::Compact);
-    file.write(SecretStore::protectBytes(envelope));
+    // protectBytes() adds the "enc:v1:" tag itself, so the payload must be the
+    // bare JSON. Prefixing it here would leave the sealed blob with a second
+    // tag inside, and loadChatBackupSnapshot() could never parse it back.
+    file.write(SecretStore::protectBytes(doc.toJson(QJsonDocument::Compact)));
     if (!file.commit()) {
         return false;
     }

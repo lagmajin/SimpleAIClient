@@ -74,6 +74,7 @@ private slots:
     void onBranchConversation(int messageIndex);
     void onEditMessage(int messageIndex, const QString &newContent);
     void onAttachImage();
+    bool attachImageFromPath(const QString &filePath);
     void onRecoverChats();
     void onExportBackupSnapshot();
     void onModelsFetched(const QStringList &models);
@@ -140,7 +141,6 @@ private:
     void saveDraft();
     void loadDraft();
     void clearDraft();
-    void applyTheme();
     void restyleCards();
     void updateCharCounter();
     // Returns false when the input is not a recognised command and the text
@@ -157,7 +157,6 @@ private:
     void adjustFontSize(int delta);
     void resetFontSize();
     void applyChatFontSize();
-    void showDraftWarning();
     void playNotificationSound();
     void updateChatDuration();
     void showShortcutsDialog();
@@ -178,7 +177,6 @@ private:
     QLabel *m_headerTitle;
     QLabel *m_headerSubtitle;
     QLineEdit *m_searchField;
-    QScrollArea *m_chatListScroll;
     QWidget *m_chatListContainer;
     QWidget *m_welcomeWidget;
     QPushButton *m_newChatButton;

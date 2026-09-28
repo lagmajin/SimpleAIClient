@@ -58,7 +58,16 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QMap>
+#include <QMimeDatabase>
 #include <QtMath>
+
+namespace {
+
+// Sending an unbounded paste makes the API reject the turn with a 400 and the
+// markdown renderer stall on the huge body, so the composer is capped.
+constexpr int kMaxInputChars = 8000;
+
+} // namespace
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -134,8 +143,22 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_apiClient, &ApiClient::responseChunk, this, &MainWindow::onResponseChunk);
     connect(m_apiClient, &ApiClient::responseFinished, this, &MainWindow::onResponseFinished);
     connect(m_apiClient, &ApiClient::requestCancelled, this, &MainWindow::onRequestCancelled);
+    // A failed model list is not a failed chat turn: routing it through the
+    // chat retry handler would append an error card to the open conversation
+    // and leave the model combo stuck on its placeholder.
     connect(m_apiClient, &ApiClient::errorOccurred, this, &MainWindow::onApiErrorWithRetry);
     connect(m_apiClient, &ApiClient::modelsFetched, this, &MainWindow::onModelsFetched);
+    connect(m_apiClient, &ApiClient::modelsFetchFailed, this, [this](const QString &error) {
+        if (m_modelCombo) {
+            m_modelCombo->setEnabled(true);
+        }
+        if (m_statusConnection) {
+            m_statusConnection->setText("Model list unavailable");
+        }
+        if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
+            QMessageBox::warning(this, "Models", "Could not load the model list: " + error);
+        }
+    });
     connect(m_modelCombo, QOverload<const QString &>::of(&QComboBox::currentTextChanged), this, &MainWindow::onModelChanged);
     connect(m_newChatButton, &QPushButton::clicked, this, &MainWindow::onNewChat);
     connect(m_profileCombo, QOverload<const QString &>::of(&QComboBox::currentTextChanged), this, &MainWindow::onProfileChanged);
@@ -361,14 +384,14 @@ void MainWindow::setupUI()
     chatListLayout->setSpacing(4);
     chatListLayout->addStretch();
 
-    m_chatListScroll = new QScrollArea(historyFrame);
-    m_chatListScroll->setWidget(m_chatListContainer);
-    m_chatListScroll->setWidgetResizable(true);
-    m_chatListScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    themed(m_chatListScroll, []() {
+    QScrollArea *chatListScroll = new QScrollArea(historyFrame);
+    chatListScroll->setWidget(m_chatListContainer);
+    chatListScroll->setWidgetResizable(true);
+    chatListScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    themed(chatListScroll, []() {
         return "QScrollArea { border: none; background: transparent; }" + scrollBarStyle();
     });
-    historyLayout->addWidget(m_chatListScroll);
+    historyLayout->addWidget(chatListScroll);
     sidebarLayout->addWidget(historyFrame, 1);
 
     m_splitter = new QSplitter(Qt::Horizontal, this);
@@ -1103,7 +1126,6 @@ void MainWindow::rebuildCurrentChatView()
     }
 
     ++m_chatRenderGeneration;
-    const int renderGeneration = m_chatRenderGeneration;
     m_scrollFollowTimer->stop();
     m_stickToBottom = false;
 
@@ -1112,6 +1134,11 @@ void MainWindow::rebuildCurrentChatView()
     m_chatContainer->setUpdatesEnabled(false);
 
     clearChatDisplay(false);
+
+    // Captured after the clear: clearChatDisplay() invalidates any render that
+    // was still pending, so reading the generation before it would make this
+    // one stale and the transcript would never be drawn.
+    const int renderGeneration = m_chatRenderGeneration;
 
     if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) {
         showWelcomeScreen();
@@ -1148,8 +1175,11 @@ void MainWindow::clearChatDisplay(bool refresh)
 
     QLayoutItem *item;
     while ((item = m_chatLayout->takeAt(0)) != nullptr) {
+        // deleteLater, not delete: this can run from a card's own signal
+        // handler (Regenerate / Branch / Edit), and Qt is still dispatching
+        // that signal from the widget.
         if (item->widget() && item->widget() != m_welcomeWidget) {
-            delete item->widget();
+            item->widget()->deleteLater();
         } else if (item->layout()) {
             delete item->layout();
         }
@@ -1486,25 +1516,10 @@ void MainWindow::applyModelFilter()
 
 void MainWindow::onAttachImage()
 {
-    QString filePath = QFileDialog::getOpenFileName(this, "Select Image", "", "Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp)");
-    if (filePath.isEmpty()) return;
-
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(this, "Error", "Could not open image file.");
-        return;
-    }
-
-    QByteArray data = file.readAll();
-    QString base64 = QString("data:image/jpeg;base64,") + data.toBase64();
-    m_currentChatImage = base64;
-
-    QPixmap pixmap;
-    pixmap.load(filePath);
-    if (!pixmap.isNull()) {
-        m_imagePreview->setPixmap(pixmap.scaled(200, 60, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        m_imagePreview->setVisible(true);
-    }
+    const QString filePath = QFileDialog::getOpenFileName(
+        this, "Select Image", "",
+        "Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp)");
+    attachImageFromPath(filePath);
 }
 
 void MainWindow::beginRequest(int chatIndex)
@@ -1537,6 +1552,11 @@ bool MainWindow::persistAssistantMessage(int chatIndex, const QString &content, 
     }
     m_chatSessions[chatIndex].messages.append({"assistant", content, promptTokens, completionTokens, totalTokens});
     m_chatSessions[chatIndex].messageCount = m_chatSessions[chatIndex].messages.size();
+    // The sidebar subtitle shows the count, and only the first turn refreshed
+    // it, so it stayed at "1 msg" for the rest of the conversation.
+    if (chatIndex == m_currentChatIndex) {
+        updateChatList();
+    }
     return true;
 }
 
@@ -1576,6 +1596,13 @@ void MainWindow::onSendMessage()
     }
 
     if (!checkApiKey()) return;
+
+    if (text.length() > kMaxInputChars) {
+        QMessageBox::warning(this, "Message Too Long",
+            QString("This message is %1 characters. Trim it to %2 or fewer before sending.")
+                .arg(text.length()).arg(kMaxInputChars));
+        return;
+    }
 
     clearDraft();
 
@@ -1662,6 +1689,12 @@ void MainWindow::onResponseReceived(const QString &response, int promptTokens, i
     saveChatSessions();
 
     updateContextUsage();
+
+    // Non-streaming requests never emit responseFinished, so the request state
+    // has to be torn down here or it leaks into the next chat switch.
+    m_retryCount = 0;
+    m_pendingMessages.clear();
+    m_requestChatIndex = -1;
 }
 
 void MainWindow::onResponseChunk(const QString &chunk)
@@ -2095,6 +2128,9 @@ void MainWindow::onRegenerateResponse(int messageIndex)
 
 void MainWindow::onBranchConversation(int messageIndex)
 {
+    // prepending shifts every session index, so an in-flight request would end
+    // up pointing at a different chat than the one it was sent from.
+    if (m_requestInFlight) return;
     if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return;
 
     const auto &sourceChat = m_chatSessions[m_currentChatIndex];
@@ -2199,28 +2235,16 @@ void MainWindow::onAdvancedSettings()
     }
 }
 
-void MainWindow::applyTheme()
-{
-    // setDark() drives the palette and re-invokes every registered stylesheet
-    // builder; the widgets created in setupUI register themselves there.
-    m_isDarkTheme = m_theme->isDark();
-    m_theme->applyPalette();
-    m_theme->refreshAll();
-    restyleCards();
-}
-
 void MainWindow::restyleCards()
 {
     // Message cards are created per message and own their own styles, so they
-    // are not part of the controller's registry.
+    // are not part of the controller's registry. The streaming card lives in
+    // m_chatLayout too, so it is covered by the loop above.
     for (int i = 0; i < m_chatLayout->count(); ++i) {
         QLayoutItem *item = m_chatLayout->itemAt(i);
         if (auto *card = qobject_cast<ChatMessageCard *>(item->widget())) {
             card->applyTheme();
         }
-    }
-    if (m_streamingCard) {
-        m_streamingCard->applyTheme();
     }
 }
 
@@ -2284,6 +2308,12 @@ void MainWindow::deleteChatAtRow(int row)
         clearChatDisplay();
         createNewChat();
     } else {
+        // The scroll position has to be flushed while m_currentChatIndex still
+        // refers to the chat being removed, otherwise the chat that slides
+        // into this index inherits its position.
+        if (m_currentChatIndex == row) {
+            saveCurrentChatScrollPosition();
+        }
         m_chatSessions.removeAt(row);
         if (m_currentChatIndex == row) {
             if (m_currentChatIndex >= m_chatSessions.size()) {
@@ -2380,12 +2410,22 @@ void MainWindow::clearDraft()
 void MainWindow::updateCharCounter()
 {
     if (!m_charCounter) return;
-    int len = m_inputField->toPlainText().length();
-    m_charCounter->setText(len == 0 ? "Start typing" : QString("%1 chars").arg(len));
-    m_charCounter->setStyleSheet(QString(
-        "QLabel { color: %1; font-size: 11px; font-weight: %2; }")
-        .arg(len > 1200 ? "#fbbf24" : "#9ca3af")
-        .arg(len > 0 ? "600" : "400"));
+    const int len = m_inputField->toPlainText().length();
+    const bool overLimit = len > kMaxInputChars;
+
+    m_charCounter->setText(len == 0 ? "Start typing"
+                                    : QString("%1 / %2").arg(len).arg(kMaxInputChars));
+
+    // Registering the builder means a theme switch re-applies this, so the
+    // length colour has to be produced inside it rather than frozen here.
+    if (ThemeController *theme = themeController()) {
+        theme->registerStyle(m_charCounter, [this, len, overLimit]() {
+            const Theme &t = currentTheme();
+            return QString("QLabel { color: %1; font-size: 11px; font-weight: %2; }")
+                .arg(overLimit ? t.danger : t.textMuted)
+                .arg(len > 0 ? "600" : "400");
+        });
+    }
 
     const int docHeight = qCeil(m_inputField->document()->size().height()) + 12;
     const int clampedHeight = qBound(44, docHeight, 150);
@@ -3086,30 +3126,58 @@ void MainWindow::dragMoveEvent(QDragMoveEvent *event)
 
 void MainWindow::dropEvent(QDropEvent *event)
 {
-    const QMimeData *mimeData = event->mimeData();
-    if (mimeData->hasUrls()) {
-        for (const QUrl &url : mimeData->urls()) {
-            QString filePath = url.toLocalFile();
-            QString lowerPath = filePath.toLower();
-            if (lowerPath.endsWith(".png") || lowerPath.endsWith(".jpg") || lowerPath.endsWith(".jpeg") ||
-                lowerPath.endsWith(".gif") || lowerPath.endsWith(".bmp") || lowerPath.endsWith(".webp")) {
-                QFile file(filePath);
-                if (file.open(QIODevice::ReadOnly)) {
-                    QByteArray data = file.readAll();
-                    QString base64 = QString("data:image/jpeg;base64,") + data.toBase64();
-                    m_currentChatImage = base64;
-
-                    QPixmap pixmap;
-                    pixmap.load(filePath);
-                    if (!pixmap.isNull()) {
-                        m_imagePreview->setPixmap(pixmap.scaled(200, 60, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-                        m_imagePreview->setVisible(true);
-                    }
-                }
-                break;
-            }
-        }
+    if (attachImageFromPath(event->mimeData()->urls().first().toLocalFile())) {
+        event->acceptProposedAction();
     }
+}
+
+bool MainWindow::attachImageFromPath(const QString &filePath)
+{
+    if (filePath.isEmpty()) {
+        return false;
+    }
+
+    // base64 inflates by ~4/3 and the result is embedded in the request, the
+    // QSettings value and every backup snapshot, so oversized files are refused
+    // rather than silently degrading all three.
+    constexpr qint64 kMaxImageBytes = 4 * 1024 * 1024;
+    const qint64 size = QFileInfo(filePath).size();
+    if (size > kMaxImageBytes) {
+        QMessageBox::warning(this, "Image Too Large",
+            QString("%1 is %2 MB. Images are limited to %3 MB.")
+                .arg(QFileInfo(filePath).fileName())
+                .arg(size / (1024 * 1024))
+                .arg(kMaxImageBytes / (1024 * 1024)));
+        return false;
+    }
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, "Error", "Could not open image file.");
+        return false;
+    }
+
+    // The MIME type has to match the payload: the dialog and the drop filter
+    // accept png/gif/bmp/webp too, and a mislabelled data URL is rejected by
+    // the vision endpoint.
+    const QMimeDatabase mimeDb;
+    const QString mimeType = mimeDb.mimeTypeForFile(filePath).name();
+    if (!mimeType.startsWith("image/")) {
+        QMessageBox::warning(this, "Unsupported File", "That file is not an image.");
+        return false;
+    }
+
+    m_currentChatImage = QString("data:%1;base64,%2")
+                             .arg(mimeType)
+                             .arg(QString::fromLatin1(file.readAll().toBase64()));
+
+    QPixmap pixmap;
+    pixmap.load(filePath);
+    if (!pixmap.isNull() && m_imagePreview) {
+        m_imagePreview->setPixmap(pixmap.scaled(200, 60, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        m_imagePreview->setVisible(true);
+    }
+    return true;
 }
 
 void MainWindow::onToggleAutoScroll()
