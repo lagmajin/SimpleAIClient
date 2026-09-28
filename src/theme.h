@@ -100,4 +100,8 @@ private:
 ThemeController *themeController();
 const Theme &currentTheme();
 
+// Scrollbar styling shared by the composer, the code blocks and both scroll
+// areas.
+QString scrollBarStyle();
+
 #endif // THEME_H

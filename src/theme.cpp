@@ -191,6 +191,41 @@ void ThemeController::registerStyle(QWidget *widget, const std::function<QString
     });
 }
 
+QString scrollBarStyle()
+{
+    const Theme &t = currentTheme();
+    return
+        "QScrollBar:vertical { "
+        "  background-color: " + t.surface + "; "
+        "  width: 10px; "
+        "  border-radius: 5px; "
+        "  margin: 0px; "
+        "} "
+        "QScrollBar::handle:vertical { "
+        "  background-color: " + t.scrollbar + "; "
+        "  border-radius: 5px; "
+        "  min-height: 30px; "
+        "} "
+        "QScrollBar::handle:vertical:hover { "
+        "  background-color: " + t.scrollbarHover + "; "
+        "} "
+        "QScrollBar:horizontal { "
+        "  background-color: " + t.surface + "; "
+        "  height: 10px; "
+        "  border-radius: 5px; "
+        "  margin: 0px; "
+        "} "
+        "QScrollBar::handle:horizontal { "
+        "  background-color: " + t.scrollbar + "; "
+        "  border-radius: 5px; "
+        "  min-width: 30px; "
+        "} "
+        "QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page { "
+        "  height: 0px; width: 0px; "
+        "  background: none; "
+        "}";
+}
+
 void ThemeController::refreshAll()
 {
     const auto builders = *m_builders;
