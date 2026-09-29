@@ -5,6 +5,7 @@
 #include <QGraphicsDropShadowEffect>
 #include <QMenu>
 #include <QPainter>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QShortcut>
 #include <QTextCursor>
@@ -286,9 +287,15 @@ ChatMessageCard::ChatMessageCard(const QString &role, const QString &content, QW
         m_copyBtn->setText("Copied!");
         m_copyBtn->setEnabled(false);
 
-        QTimer::singleShot(1000, [this]() {
-            m_copyBtn->setText("Copy");
-            m_copyBtn->setEnabled(true);
+        // `this` as the context object: without it the timer outlives the card
+        // and fires into freed memory, because the view now defers card
+        // deletion to the event loop.
+        QPointer<QPushButton> button = m_copyBtn;
+        QTimer::singleShot(1000, this, [button]() {
+            if (button) {
+                button->setText("Copy");
+                button->setEnabled(true);
+            }
         });
     });
 

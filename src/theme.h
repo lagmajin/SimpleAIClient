@@ -3,6 +3,7 @@
 
 #include <QColor>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QWidget>
 
@@ -94,6 +95,10 @@ private:
     bool m_isDark;
     Theme m_tokens;
     class QHash<QObject *, std::function<QString()>> *m_builders;
+    // Widgets that already have a destroyed() cleanup connection, so
+    // re-registering one (the char counter does, on every keystroke) does not
+    // add another.
+    QSet<QObject *> *m_watched;
 };
 
 // Process-wide theme controller, owned by MainWindow.

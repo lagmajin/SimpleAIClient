@@ -134,10 +134,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_inputField->installEventFilter(this);
 
-    new QShortcut(QKeySequence("Ctrl+N"), this, SLOT(onNewChat()));
-    new QShortcut(QKeySequence("Ctrl+E"), this, SLOT(onExportChat()));
-    new QShortcut(QKeySequence("Ctrl+,"), this, SLOT(onSettings()));
-
+    // Ctrl+N, Ctrl+E and Ctrl+, are registered once, on the menu actions in
+    // setupMenu(). Registering them here as well made the key press ambiguous
+    // between two receivers in the same shortcut context.
     connect(m_sendButton, &QToolButton::clicked, this, &MainWindow::onSendMessage);
     connect(m_apiClient, &ApiClient::responseReceived, this, &MainWindow::onResponseReceived);
     connect(m_apiClient, &ApiClient::responseChunk, this, &MainWindow::onResponseChunk);
@@ -892,6 +891,11 @@ void MainWindow::createNewChat()
     newChat.pinned = false;
     newChat.messagesLoaded = true;
     m_chatSessions.prepend(newChat);
+    // prepending shifts every session index, so an in-flight request would end
+    // up naming a different chat than the one it was sent from.
+    if (m_requestChatIndex >= 0) {
+        m_requestChatIndex++;
+    }
     m_currentChatIndex = 0;
     clearChatDisplay();
     showWelcomeScreen();
@@ -911,7 +915,13 @@ void MainWindow::createNewChat()
 void MainWindow::switchToChat(int index, bool force)
 {
     if (index < 0 || index >= m_chatSessions.size()) return;
-    if (!force && index == m_currentChatIndex && m_chatSessions[index].messagesLoaded) return;
+    // A migrated session arrives with its messages already in memory and
+    // m_currentChatIndex already pointing at it, so the early return would
+    // leave the transcript unbuilt and the welcome screen on top of it.
+    if (!force && index == m_currentChatIndex && m_chatSessions[index].messagesLoaded
+        && !m_chatSessions[index].messages.isEmpty()) {
+        return;
+    }
 
     const QString currentDraft = m_inputField->toPlainText().trimmed();
     const bool discardDraft = index != m_currentChatIndex && !currentDraft.isEmpty();
@@ -1172,6 +1182,16 @@ void MainWindow::clearChatDisplay(bool refresh)
     // itself, so resuming the old cursor would duplicate them.
     ++m_chatRenderGeneration;
     m_chatRenderCursor = -1;
+
+    // rebuildCurrentChatView() disables updates for the duration of a batched
+    // render and re-enables them when it finishes. A pending batch is
+    // invalidated here, so whoever disabled them has to give them back.
+    m_chatContainer->setUpdatesEnabled(true);
+
+    // The 50 ms render timer would otherwise keep firing with no card to
+    // append to, for as long as the request lasts.
+    m_streamRenderTimer->stop();
+    m_pendingStreamChunk.clear();
 
     QLayoutItem *item;
     while ((item = m_chatLayout->takeAt(0)) != nullptr) {
@@ -1552,10 +1572,13 @@ bool MainWindow::persistAssistantMessage(int chatIndex, const QString &content, 
     }
     m_chatSessions[chatIndex].messages.append({"assistant", content, promptTokens, completionTokens, totalTokens});
     m_chatSessions[chatIndex].messageCount = m_chatSessions[chatIndex].messages.size();
-    // The sidebar subtitle shows the count, and only the first turn refreshed
-    // it, so it stayed at "1 msg" for the rest of the conversation.
+    // Both the sidebar subtitle and the header show the count, and neither was
+    // refreshed after the first turn, so they read "1 message" for the rest of
+    // the conversation. A background chat is refreshed too, since the sidebar
+    // is visible while the user reads elsewhere.
+    updateChatList();
     if (chatIndex == m_currentChatIndex) {
-        updateChatList();
+        updateHeaderState();
     }
     return true;
 }
@@ -1689,6 +1712,9 @@ void MainWindow::onResponseReceived(const QString &response, int promptTokens, i
     saveChatSessions();
 
     updateContextUsage();
+    updateHeaderState();
+    updateChatDuration();
+    playNotificationSound();
 
     // Non-streaming requests never emit responseFinished, so the request state
     // has to be torn down here or it leaks into the next chat switch.
@@ -1712,6 +1738,19 @@ void MainWindow::onResponseChunk(const QString &chunk)
             m_streamingCard = new ChatMessageCard("assistant", m_streamedContent, m_chatContainer);
             m_streamingCard->setContentFontSize(m_chatFontSize);
             m_streamingCard->setStreaming(true);
+            m_streamingCard->setTimestamp(QDateTime::currentDateTime());
+            // The live card is built here rather than through
+            // addMessageCardWithCard(), so it has to be given the same index
+            // and the same actions the reloaded copy gets. Without this the
+            // freshest answer had no Regenerate, Branch or hover timestamp
+            // while the same message acquired them after a chat switch.
+            m_streamingCard->setMessageIndex(m_chatSessions[m_currentChatIndex].messages.size());
+            m_streamingCard->showRegenerateButton(true);
+            m_streamingCard->showBranchButton(true);
+            connect(m_streamingCard, &ChatMessageCard::regenerateRequested,
+                    this, &MainWindow::onRegenerateResponse);
+            connect(m_streamingCard, &ChatMessageCard::branchRequested,
+                    this, &MainWindow::onBranchConversation);
             m_chatLayout->addWidget(m_streamingCard);
             appendBottomSpacer();
             // The card was seeded with everything received so far.
@@ -1787,6 +1826,7 @@ void MainWindow::onErrorOccurred(const QString &error)
     m_streamRenderTimer->stop();
     m_pendingStreamChunk.clear();
     m_streamedContent.clear();
+    if (m_statusSpeed) m_statusSpeed->clear();
 
     if (m_streamingCard) {
         m_chatLayout->removeWidget(m_streamingCard);
@@ -2418,12 +2458,16 @@ void MainWindow::updateCharCounter()
 
     // Registering the builder means a theme switch re-applies this, so the
     // length colour has to be produced inside it rather than frozen here.
+    // updateCharCounter() runs on every keystroke, so the previous
+    // registration is replaced rather than left to accumulate connections.
+    m_charCounterStyleLength = len;
+    m_charCounterOverLimit = overLimit;
     if (ThemeController *theme = themeController()) {
-        theme->registerStyle(m_charCounter, [this, len, overLimit]() {
+        theme->registerStyle(m_charCounter, [this]() {
             const Theme &t = currentTheme();
             return QString("QLabel { color: %1; font-size: 11px; font-weight: %2; }")
-                .arg(overLimit ? t.danger : t.textMuted)
-                .arg(len > 0 ? "600" : "400");
+                .arg(m_charCounterOverLimit ? t.danger : t.textMuted)
+                .arg(m_charCounterStyleLength > 0 ? "600" : "400");
         });
     }
 

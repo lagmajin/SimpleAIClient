@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QHash>
 #include <QPalette>
+#include <QSet>
 #include <QStyleFactory>
 #include <QWidget>
 
@@ -110,6 +111,7 @@ ThemeController::ThemeController(QObject *parent)
     , m_isDark(true)
     , m_tokens(Theme::dark())
     , m_builders(new QHash<QObject *, std::function<QString()>>())
+    , m_watched(new QSet<QObject *>())
 {
     g_themeController = this;
 }
@@ -119,6 +121,7 @@ ThemeController::~ThemeController()
     if (g_themeController == this) {
         g_themeController = nullptr;
     }
+    delete m_watched;
     delete m_builders;
 }
 
@@ -185,9 +188,17 @@ void ThemeController::registerStyle(QWidget *widget, const std::function<QString
     widget->setStyleSheet(builder());
     m_builders->insert(widget, builder);
     // Drop the builder if the widget goes away so a long session with chat
-    // rebuilds does not accumulate entries.
+    // rebuilds does not accumulate entries. Re-registering a widget replaces
+    // the stored builder, so the cleanup connection is only made once.
+    if (!m_watched->isEmpty() && m_watched->contains(widget)) {
+        return;
+    }
+    m_watched->insert(widget);
     connect(widget, &QObject::destroyed, this, [this, widget]() {
         m_builders->remove(widget);
+        if (!m_watched->isEmpty()) {
+            m_watched->remove(widget);
+        }
     });
 }
 

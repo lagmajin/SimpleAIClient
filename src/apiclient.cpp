@@ -22,7 +22,7 @@ ApiClient::ApiClient(QObject *parent)
     , m_maxTokens(0)
     , m_webSearch(false)
     , m_activeRequestThread(nullptr)
-    , m_activeRequestWorker(nullptr)
+    , m_currentRequest(nullptr)
 {
 }
 
@@ -74,11 +74,17 @@ void ApiClient::sendMessage(const QList<ChatMessage> &messages)
     ChatRequestWorker *worker = new ChatRequestWorker(m_apiKey, m_model, messages, m_streaming, m_systemPrompt, m_temperature, m_maxTokens, m_webSearch);
     worker->moveToThread(thread);
     m_activeRequestThread = thread;
-    m_activeRequestWorker = worker;
 
     // Stale workers can still be draining their socket: drop everything they
     // emit instead of letting it reach the UI and the chat state.
-    const auto isCurrent = [this, worker]() { return m_activeRequestWorker == worker; };
+    //
+    // The pointer is captured by value and re-read under a connection to the
+    // worker's destroyed() signal rather than compared against
+    // m_activeRequestWorker: the worker is deleteLater'd as soon as its thread
+    // finishes, so the member would be left dangling and a later
+    // shutdownActiveRequest() would call cancel() on freed memory.
+    const auto isCurrent = [this, worker]() { return m_currentRequest == worker; };
+    m_currentRequest = worker;
 
     connect(thread, &QThread::started, worker, &ChatRequestWorker::execute);
     connect(worker, &ChatRequestWorker::responseReceived, this, [this, isCurrent](const QString &response, int p, int c, int t, int ms) {
@@ -102,21 +108,34 @@ void ApiClient::sendMessage(const QList<ChatMessage> &messages)
     connect(worker, &ChatRequestWorker::errorOccurred, thread, &QThread::quit);
     connect(thread, &QThread::finished, worker, &QObject::deleteLater);
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    // Cleared here, in the worker thread, as soon as it is destroyed, so the
+    // stored pointer can never outlive the object it refers to.
+    connect(worker, &QObject::destroyed, this, [this, worker]() {
+        if (m_currentRequest == worker) {
+            m_currentRequest = nullptr;
+        }
+    });
 
     thread->start();
 }
 
 void ApiClient::shutdownActiveRequest()
 {
-    if (!m_activeRequestWorker) {
+    ChatRequestWorker *worker = m_currentRequest;
+    if (!worker) {
         return;
     }
 
     // cancel() only touches an atomic flag and httplib's own (thread-safe)
     // stop(), so it is called directly: a queued call would sit unprocessed in
     // the worker thread's event queue, which is blocked inside Post().
-    m_activeRequestWorker->cancel();
-    m_activeRequestWorker = nullptr;
+    //
+    // m_currentRequest is cleared afterwards but not before, so the worker's
+    // requestCancelled signal is still recognised as current and reaches the
+    // UI. Nulling it first would silently drop the signal and leave the window
+    // stuck showing an in-flight request forever.
+    worker->cancel();
+    m_currentRequest = nullptr;
     m_activeRequestThread = nullptr;
 }
 
@@ -391,6 +410,20 @@ void ChatRequestWorker::executeImpl()
             return;
         }
 
+        if (!sawSseData) {
+            // A 200 that never produced an SSE event is not a response: a
+            // proxy error page, a captive portal, or a JSON error document
+            // with a success status. Reporting success would persist an empty
+            // assistant message and the turn would be silently lost.
+            const QByteArray body = nonSseBody.isEmpty() ? QByteArray::fromStdString(res->body)
+                                                          : nonSseBody;
+            const QString errorMsg = buildErrorMessage(res->status, body);
+            qDebug() << "ChatRequestWorker: no SSE data in a 200 response" << errorMsg;
+            emit errorOccurred(errorMsg.isEmpty() ? QString("The server returned no completions")
+                                                  : errorMsg);
+            return;
+        }
+
         emit responseFinished(static_cast<int>(QDateTime::currentMSecsSinceEpoch() - m_startTime));
     } else {
         auto res = client->Post("/api/v1/chat/completions", headers, body, "application/json");
@@ -419,10 +452,23 @@ void ChatRequestWorker::executeImpl()
 
         if (obj.contains("choices")) {
             QJsonArray choices = obj["choices"].toArray();
-            if (!choices.isEmpty()) {
+            if (choices.isEmpty()) {
+                emit errorOccurred("Empty choices in response");
+            } else if (obj.contains("error")) {
+                // Some gateways answer 200 with an error document.
+                emit errorOccurred(buildErrorMessage(res->status, QByteArray::fromStdString(res->body)));
+            } else {
                 QJsonObject firstChoice = choices[0].toObject();
                 QJsonObject message = firstChoice["message"].toObject();
-                QString content = message["content"].toString();
+                const QString content = message["content"].toString();
+
+                if (content.trimmed().isEmpty()) {
+                    // A tool-call-only or reasoning-only turn has no text.
+                    // Persisting an empty assistant message would send it back
+                    // to the API on the next request and blank the transcript.
+                    emit errorOccurred("The model returned an empty response");
+                    return;
+                }
 
                 int promptTokens = 0, completionTokens = 0, totalTokens = 0;
                 if (obj.contains("usage")) {
@@ -434,11 +480,9 @@ void ChatRequestWorker::executeImpl()
 
                 int responseTime = static_cast<int>(QDateTime::currentMSecsSinceEpoch() - m_startTime);
                 emit responseReceived(content, promptTokens, completionTokens, totalTokens, responseTime);
-            } else {
-                emit errorOccurred("Empty choices in response");
             }
         } else {
-            emit errorOccurred("Unexpected response format");
+            emit errorOccurred(buildErrorMessage(res->status, QByteArray::fromStdString(res->body)));
         }
     }
 

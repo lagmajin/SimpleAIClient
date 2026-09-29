@@ -55,6 +55,21 @@ QJsonObject MainWindow::buildChatBackupSnapshot() const
                     messagesArray = doc.array();
                 }
             }
+            if (messagesArray.isEmpty() && chat.messageCount > 0) {
+                // The transcript is known to exist but could not be read back:
+                // a truncated registry value (a chat with an attached image
+                // runs to megabytes) or a DPAPI failure. Writing an empty
+                // array here would replace the last good copy in the snapshot
+                // file, and recoverableChatIndices() would then never offer the
+                // chat, so the previous snapshot's entry is kept instead.
+                const QJsonObject previous = previousSnapshotSession(chat.id);
+                if (!previous.isEmpty()) {
+                    sessionsArray.append(previous);
+                    continue;
+                }
+                qWarning("ChatStore: dropping unreadable chat %s from the backup",
+                         qPrintable(chat.id));
+            }
         }
 
         QJsonObject sessionObj;
@@ -75,6 +90,21 @@ QJsonObject MainWindow::buildChatBackupSnapshot() const
         : QString();
     snapshot["sessions"] = sessionsArray;
     return snapshot;
+}
+
+QJsonObject MainWindow::previousSnapshotSession(const QString &chatId) const
+{
+    QJsonObject snapshot;
+    if (!loadChatBackupSnapshot(&snapshot)) {
+        return QJsonObject();
+    }
+    for (const auto &val : snapshot["sessions"].toArray()) {
+        const QJsonObject session = val.toObject();
+        if (session["id"].toString() == chatId && !session["messages"].toArray().isEmpty()) {
+            return session;
+        }
+    }
+    return QJsonObject();
 }
 
 bool MainWindow::loadChatBackupSnapshot(QJsonObject *snapshot) const

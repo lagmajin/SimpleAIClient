@@ -62,7 +62,10 @@ private:
     int m_maxTokens;
     bool m_webSearch;
     QThread *m_activeRequestThread;
-    ChatRequestWorker *m_activeRequestWorker;
+    // The worker whose signals are forwarded to the UI. Cleared in the
+    // worker's destroyed() notification, because the thread finishes and
+    // deleteLater()s it right after the request ends.
+    ChatRequestWorker *m_currentRequest;
 };
 
 class ChatRequestWorker : public QObject
