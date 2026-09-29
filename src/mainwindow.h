@@ -24,7 +24,9 @@
 
 #include "apiclient.h"
 #include "chatsession.h"
+#include "chatsessionlist.h"
 #include "chatview.h"
+#include "chatsessionlist.h"
 #include "chatview.h"
 #include "chatwidgets.h"
 #include "secretstore.h"
@@ -123,7 +125,6 @@ private:
     void showThinkingIndicator();
     void hideThinkingIndicator(bool refresh = true);
     void filterChats(const QString &query);
-    void continueChatListRender(int generation);
     void saveCurrentChatScrollPosition();
     void restoreCurrentChatScrollPosition();
     void flushStreamingChunks();
@@ -202,15 +203,13 @@ private:
     // Full text of the answer being streamed, kept so a view rebuild mid-stream
     // can restore the card instead of losing what already arrived.
     QString m_streamedContent;
-    int m_chatListRenderGeneration = 0;
-    QList<int> m_chatListRenderIndices;
-    int m_chatListRenderCursor = 0;
     int m_retryCount = 0;
     int m_maxRetries = 3;
     QTimer *m_retryTimer = nullptr;
     // Owns every QSettings read and write, including the debounced backup.
     // Owns the conversation pane: cards, lazy render, scroll, search.
     class ChatView *m_view = nullptr;
+    class ChatSessionList *m_sessionList = nullptr;
     // Owns every QSettings read and write, including the debounced backup.
     class ChatStore *m_store = nullptr;
     QList<ChatMessage> m_pendingMessages;

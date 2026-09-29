@@ -150,6 +150,7 @@ qt_add_executable(SimpleAIClient
     src/chatview.cpp
     src/chatviewdelegate.cpp
     src/chatsession.cpp
+    src/chatsessionlist.cpp
     src/chatflow.cpp
     src/settings.cpp
     src/chatexport.cpp

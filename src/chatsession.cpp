@@ -135,123 +135,24 @@ void MainWindow::switchToChat(int index, bool force)
     updateHeaderState();
     updateContextUsage();
     updateChatDuration();
+    // Repaint the highlight on the open row without rebuilding the list, which
+    // would reset its scroll position and re-run the batches.
+    if (m_sessionList) {
+        m_sessionList->setCurrentIndex(index);
+    }
 }
 
 void MainWindow::updateChatList()
 {
-    filterChats(m_searchField->text());
+    if (m_sessionList) {
+        m_sessionList->refresh();
+    }
 }
 
 void MainWindow::filterChats(const QString &query)
 {
-    QVBoxLayout *layout = qobject_cast<QVBoxLayout*>(m_chatListContainer->layout());
-    if (!layout) return;
-
-    QLayoutItem *item;
-    while (layout->count() > 0) {
-        item = layout->takeAt(0);
-        if (item->widget()) {
-            // The list can be rebuilt from a widget's own context-menu
-            // callback.  Deleting that widget synchronously would destroy
-            // the sender while Qt is still dispatching its event.
-            item->widget()->deleteLater();
-        }
-        delete item;
-    }
-
-    QString lowerQuery = query.toLower();
-    ++m_chatListRenderGeneration;
-    const int renderGeneration = m_chatListRenderGeneration;
-    m_chatListRenderIndices.clear();
-
-    QList<int> pinnedIndices;
-    QList<int> unpinnedIndices;
-    for (int i = 0; i < m_chatSessions.size(); ++i) {
-        if (!lowerQuery.isEmpty() && !m_chatSessions[i].title.toLower().contains(lowerQuery)) {
-            continue;
-        }
-        if (m_chatSessions[i].pinned) {
-            pinnedIndices.append(i);
-        } else {
-            unpinnedIndices.append(i);
-        }
-    }
-
-    m_chatListRenderIndices = pinnedIndices + unpinnedIndices;
-    m_chatListRenderCursor = 0;
-
-    layout->addStretch();
-    continueChatListRender(renderGeneration);
-}
-
-void MainWindow::continueChatListRender(int generation)
-{
-    if (generation != m_chatListRenderGeneration) {
-        return;
-    }
-
-    QVBoxLayout *layout = qobject_cast<QVBoxLayout*>(m_chatListContainer->layout());
-    if (!layout) return;
-
-    const int total = m_chatListRenderIndices.size();
-    if (m_chatListRenderCursor >= total) {
-        return;
-    }
-
-    constexpr int kBatchSize = 14;
-    int rendered = 0;
-    QElapsedTimer timer;
-    timer.start();
-
-    while (m_chatListRenderCursor < total && rendered < kBatchSize) {
-        int idx = m_chatListRenderIndices[m_chatListRenderCursor++];
-        const ChatSession &chat = m_chatSessions[idx];
-        QStringList metaParts;
-        if (chat.messageCount == 0) {
-            metaParts << "Empty";
-        } else {
-            metaParts << QString("%1 msg").arg(chat.messageCount);
-        }
-        if (chat.pinned) {
-            metaParts << "Pinned";
-        }
-
-        ChatListItem *chatItem = new ChatListItem(
-            chat.title,
-            metaParts.join("  •  "),
-            idx,
-            chat.pinned,
-            m_chatListContainer
-        );
-        if (idx == m_currentChatIndex) {
-            chatItem->setActive(true);
-        }
-        layout->insertWidget(layout->count() - 1, chatItem);
-
-        connect(chatItem, &ChatListItem::clicked, this, [this, idx]() {
-            switchToChat(idx);
-            updateChatList();
-        }, Qt::QueuedConnection);
-        connect(chatItem, &ChatListItem::deleteClicked, this, [this, idx]() {
-            deleteChatAtRow(idx);
-        }, Qt::QueuedConnection);
-        connect(chatItem, &ChatListItem::renameRequested, this, [this, idx]() {
-            renameChat(idx);
-        }, Qt::QueuedConnection);
-        connect(chatItem, &ChatListItem::pinRequested, this, [this, idx]() {
-            togglePinChat(idx);
-        }, Qt::QueuedConnection);
-
-        ++rendered;
-        if (timer.elapsed() >= 8) {
-            break;
-        }
-    }
-
-    if (m_chatListRenderCursor < total) {
-        QTimer::singleShot(0, this, [this, generation]() {
-            continueChatListRender(generation);
-        });
+    if (m_sessionList) {
+        m_sessionList->filter(query);
     }
 }
 

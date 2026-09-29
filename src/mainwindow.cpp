@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "appicons.h"
+#include "chatsessionlist.h"
 #include "chatstore.h"
 #include "chatwidgets.h"
 #include <QInputDialog>
@@ -78,8 +79,6 @@ MainWindow::MainWindow(QWidget *parent)
     , m_charCounter(nullptr)
     , m_searchBar(nullptr)
     , m_currentProfileName("")
-    , m_chatListRenderGeneration(0)
-    , m_chatListRenderCursor(0)
     , m_retryCount(0)
     , m_maxRetries(3)
     , m_retryTimer(new QTimer(this))
@@ -109,6 +108,15 @@ MainWindow::MainWindow(QWidget *parent)
     // After setupUI, which creates the scroll area, container and welcome
     // widget the view takes over.
     initChatView();
+    // Same reasoning: the container and the search box are created by setupUI.
+    m_sessionList = new ChatSessionList(m_chatListContainer, m_searchField, &m_chatSessions, this);
+    connect(m_sessionList, &ChatSessionList::chatSelected, this, [this](int index) {
+        switchToChat(index);
+        updateChatList();
+    });
+    connect(m_sessionList, &ChatSessionList::deleteRequested, this, &MainWindow::deleteChatAtRow);
+    connect(m_sessionList, &ChatSessionList::renameRequested, this, &MainWindow::renameChat);
+    connect(m_sessionList, &ChatSessionList::pinRequested, this, &MainWindow::togglePinChat);
     setupMenu();
     loadProfiles();
     loadSettings();

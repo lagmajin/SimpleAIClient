@@ -7,6 +7,7 @@
 
 #include "mainwindow.h"
 
+#include "chatsessionlist.h"
 #include "chatview.h"
 
 void MainWindow::initChatView()
