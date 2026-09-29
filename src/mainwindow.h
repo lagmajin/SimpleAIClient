@@ -45,6 +45,7 @@ private slots:
     void onResponseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs);
     void onResponseChunk(const QString &chunk);
     void onResponseFinished(int responseTimeMs);
+    void onStreamUsage(int promptTokens, int completionTokens, int totalTokens);
     void onErrorOccurred(const QString &error);
     void onSettings();
     void onExportChat();
@@ -218,6 +219,10 @@ private:
     QDateTime m_chatStartTime;
     QLabel *m_statusDuration = nullptr;
     QLabel *m_statusSpeed = nullptr;
+    // Token usage of the answer being streamed, filled in by onStreamUsage().
+    int m_streamPromptTokens = 0;
+    int m_streamCompletionTokens = 0;
+    int m_streamTotalTokens = 0;
     qint64 m_streamStartTime = 0;
     int m_streamTokenCount = 0;
     // Captured by the char counter's stylesheet builder, which is re-registered

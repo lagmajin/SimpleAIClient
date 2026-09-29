@@ -93,6 +93,9 @@ void ApiClient::sendMessage(const QList<ChatMessage> &messages)
     connect(worker, &ChatRequestWorker::responseChunk, this, [this, isCurrent](const QString &chunk) {
         if (isCurrent()) emit responseChunk(chunk);
     });
+    connect(worker, &ChatRequestWorker::streamUsage, this, [this, isCurrent](int prompt, int completion, int total) {
+        if (isCurrent()) emit streamUsage(prompt, completion, total);
+    });
     connect(worker, &ChatRequestWorker::responseFinished, this, [this, isCurrent](int ms) {
         if (isCurrent()) emit responseFinished(ms);
     });
@@ -262,6 +265,150 @@ void ChatRequestWorker::execute()
     }
 }
 
+// A streaming response reports usage in a final chunk that carries no choices,
+// so it is a separate parse from the content deltas.
+bool ChatRequestWorker::usageFromSse(const QString &line, int *prompt, int *completion, int *total)
+{
+    QString data = line;
+    if (data.startsWith("data:")) {
+        data = data.mid(5);
+    }
+    data = data.trimmed();
+    if (data.isEmpty() || data == "[DONE]") {
+        return false;
+    }
+
+    const QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8());
+    if (!doc.isObject()) {
+        return false;
+    }
+    const QJsonObject usage = doc.object().value("usage").toObject();
+    if (usage.isEmpty()) {
+        return false;
+    }
+    *prompt = usage.value("prompt_tokens").toInt();
+    *completion = usage.value("completion_tokens").toInt();
+    *total = usage.value("total_tokens").toInt();
+    return true;
+}
+
+// Returns true when the turn is over, successfully or otherwise: the caller
+// only emits responseFinished, and every error path has already reported.
+bool ChatRequestWorker::postStreaming(QJsonObject payload, int attempt)
+{
+    auto client = takeClientSnapshot();
+    if (!client) {
+        emit errorOccurred("Request failed: no HTTP client");
+        return true;
+    }
+
+    const QByteArray requestBody = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    const std::string body = requestBody.toStdString();
+    const httplib::Headers headers = {
+        {"Authorization", "Bearer " + m_apiKey.toStdString()}
+    };
+
+    // httplib hands over raw socket-read boundaries, not SSE event
+    // boundaries, and never fills Result::body when a content receiver is
+    // supplied. Keep the unterminated tail across calls so a `data: {...}`
+    // line split by a chunk boundary is not silently dropped, and keep any
+    // non-SSE payload (the error document) for the error path.
+    QString lineBuffer;
+    QByteArray nonSseBody;
+    bool sawSseData = false;
+    int promptTokens = 0;
+    int completionTokens = 0;
+    int totalTokens = 0;
+
+    const auto handleLine = [&](const QString &rawLine) {
+        const QString line = rawLine.trimmed();
+        if (line.isEmpty()) {
+            return;
+        }
+        if (!line.startsWith("data:")) {
+            if (!sawSseData && nonSseBody.size() < kMaxErrorBodyBytes) {
+                nonSseBody += rawLine.toUtf8();
+                nonSseBody += '\n';
+            }
+            return;
+        }
+        sawSseData = true;
+        if (usageFromSse(line, &promptTokens, &completionTokens, &totalTokens)) {
+            return;
+        }
+        const QString content = parseSSELine(line);
+        if (!content.isEmpty()) {
+            emit responseChunk(content);
+        }
+    };
+
+    httplib::Result res = client->Post("/api/v1/chat/completions", headers, body, "application/json",
+        [&](const char *data, size_t data_length) {
+            if (m_cancelRequested.load()) {
+                return false;
+            }
+            lineBuffer += QString::fromUtf8(data, static_cast<int>(data_length));
+            int newline = lineBuffer.indexOf('\n');
+            while (newline >= 0) {
+                handleLine(lineBuffer.left(newline));
+                lineBuffer.remove(0, newline + 1);
+                newline = lineBuffer.indexOf('\n');
+            }
+            return true;
+        });
+
+    if (m_cancelRequested.load()) {
+        emit requestCancelled();
+        return true;
+    }
+
+    if (!res) {
+        const QString errMsg = QString("Request failed: error code %1").arg(static_cast<int>(res.error()));
+        qDebug() << "ChatRequestWorker Error:" << errMsg;
+        emit errorOccurred(errMsg);
+        return true;
+    }
+
+    if (res->status != 200) {
+        if (!lineBuffer.isEmpty()) {
+            handleLine(lineBuffer);
+        }
+
+        // The server may not implement stream_options. Drop it and try once
+        // more, so a backend without the field costs one round trip instead of
+        // the whole conversation.
+        if (attempt == 0 && payload.contains("stream_options")) {
+            qDebug() << "ChatRequestWorker: stream_options rejected, retrying without it";
+            payload.remove("stream_options");
+            return postStreaming(payload, 1);
+        }
+
+        const QByteArray errorBody = nonSseBody.isEmpty() ? QByteArray::fromStdString(res->body) : nonSseBody;
+        const QString errorMsg = buildErrorMessage(res->status, errorBody);
+        qDebug() << "ChatRequestWorker HTTP Error:" << res->status << errorMsg;
+        emit errorOccurred(errorMsg);
+        return true;
+    }
+
+    if (!sawSseData) {
+        // A 200 that never produced an SSE event is not a response: a proxy
+        // error page, a captive portal, or a JSON error document with a success
+        // status. Reporting success would persist an empty assistant message
+        // and the turn would be silently lost.
+        const QByteArray responseBody = nonSseBody.isEmpty() ? QByteArray::fromStdString(res->body)
+                                                              : nonSseBody;
+        const QString errorMsg = buildErrorMessage(res->status, responseBody);
+        qDebug() << "ChatRequestWorker: no SSE data in a 200 response" << errorMsg;
+        emit errorOccurred(errorMsg.isEmpty() ? QString("The server returned no completions")
+                                              : errorMsg);
+        return true;
+    }
+
+    if (totalTokens > 0) {
+        emit streamUsage(promptTokens, completionTokens, totalTokens);
+    }
+    return true;
+}
 void ChatRequestWorker::executeImpl()
 {
     m_startTime = QDateTime::currentMSecsSinceEpoch();
@@ -344,86 +491,15 @@ void ChatRequestWorker::executeImpl()
     }
 
     if (m_streaming) {
-        // httplib hands over raw socket-read boundaries, not SSE event
-        // boundaries, and never fills Result::body when a content receiver is
-        // supplied. Keep the unterminated tail across calls so a `data: {...}`
-        // line split by a chunk boundary is not silently dropped, and keep any
-        // non-SSE payload (the error document) for the error path.
-        QString lineBuffer;
-        QByteArray nonSseBody;
-        bool sawSseData = false;
-
-        const auto handleLine = [&](const QString &rawLine) {
-            const QString line = rawLine.trimmed();
-            if (line.isEmpty()) {
-                return;
-            }
-            if (!line.startsWith("data:")) {
-                if (!sawSseData && nonSseBody.size() < kMaxErrorBodyBytes) {
-                    nonSseBody += rawLine.toUtf8();
-                    nonSseBody += '\n';
-                }
-                return;
-            }
-            sawSseData = true;
-            const QString content = parseSSELine(line);
-            if (!content.isEmpty()) {
-                emit responseChunk(content);
-            }
-        };
-
-        httplib::Result res = client->Post("/api/v1/chat/completions", headers, body, "application/json",
-            [&](const char *data, size_t data_length) {
-                if (m_cancelRequested.load()) {
-                    return false;
-                }
-                lineBuffer += QString::fromUtf8(data, static_cast<int>(data_length));
-                int newline = lineBuffer.indexOf('\n');
-                while (newline >= 0) {
-                    handleLine(lineBuffer.left(newline));
-                    lineBuffer.remove(0, newline + 1);
-                    newline = lineBuffer.indexOf('\n');
-                }
-                return true;
-            });
-
-        if (m_cancelRequested.load()) {
-            emit requestCancelled();
+        // OpenAI-compatible servers only report token usage on a streamed
+        // response when asked, via a final usage-only chunk. The field is not
+        // part of every implementation, so a server that rejects the request
+        // gets one retry without it rather than a broken chat.
+        QJsonObject streamPayload = payload;
+        streamPayload["stream_options"] = QJsonObject{{"include_usage", true}};
+        if (!postStreaming(streamPayload, 0)) {
             return;
         }
-
-        if (!res) {
-            QString errMsg = QString("Request failed: error code %1").arg(static_cast<int>(res.error()));
-            qDebug() << "ChatRequestWorker Error:" << errMsg;
-            emit errorOccurred(errMsg);
-            return;
-        }
-
-        if (res->status != 200) {
-            if (!lineBuffer.isEmpty()) {
-                handleLine(lineBuffer);
-            }
-            const QByteArray errorBody = nonSseBody.isEmpty() ? QByteArray::fromStdString(res->body) : nonSseBody;
-            const QString errorMsg = buildErrorMessage(res->status, errorBody);
-            qDebug() << "ChatRequestWorker HTTP Error:" << res->status << errorMsg;
-            emit errorOccurred(errorMsg);
-            return;
-        }
-
-        if (!sawSseData) {
-            // A 200 that never produced an SSE event is not a response: a
-            // proxy error page, a captive portal, or a JSON error document
-            // with a success status. Reporting success would persist an empty
-            // assistant message and the turn would be silently lost.
-            const QByteArray body = nonSseBody.isEmpty() ? QByteArray::fromStdString(res->body)
-                                                          : nonSseBody;
-            const QString errorMsg = buildErrorMessage(res->status, body);
-            qDebug() << "ChatRequestWorker: no SSE data in a 200 response" << errorMsg;
-            emit errorOccurred(errorMsg.isEmpty() ? QString("The server returned no completions")
-                                                  : errorMsg);
-            return;
-        }
-
         emit responseFinished(static_cast<int>(QDateTime::currentMSecsSinceEpoch() - m_startTime));
     } else {
         auto res = client->Post("/api/v1/chat/completions", headers, body, "application/json");

@@ -23,6 +23,9 @@ void MainWindow::beginRequest(int chatIndex)
     if (m_view) m_view->clearStream();
     m_retryCount = 0;
     m_streamStartTime = QDateTime::currentMSecsSinceEpoch();
+    m_streamPromptTokens = 0;
+    m_streamCompletionTokens = 0;
+    m_streamTotalTokens = 0;
 
     m_inputField->setEnabled(false);
     setRequestInFlight(true);
@@ -190,6 +193,17 @@ void MainWindow::onResponseChunk(const QString &chunk)
     }
 }
 
+void MainWindow::onStreamUsage(int promptTokens, int completionTokens, int totalTokens)
+{
+    m_streamPromptTokens = promptTokens;
+    m_streamCompletionTokens = completionTokens;
+    m_streamTotalTokens = totalTokens;
+
+    if (m_statusTokens && totalTokens > 0) {
+        m_statusTokens->setText(QString("%1 tokens").arg(totalTokens));
+    }
+}
+
 void MainWindow::onResponseFinished(int responseTimeMs)
 {
     hideThinkingIndicator();
@@ -198,7 +212,10 @@ void MainWindow::onResponseFinished(int responseTimeMs)
     const int requestChat = m_requestChatIndex;
     const bool shownInCurrentChat = requestChat == m_currentChatIndex;
 
-    if (persistAssistantMessage(requestChat, m_streamedContent, 0, 0, 0)) {
+    // A streamed response only reports usage when the server was asked for it,
+    // and it arrives before this signal, so the numbers are already here.
+    if (persistAssistantMessage(requestChat, m_streamedContent,
+                                m_streamPromptTokens, m_streamCompletionTokens, m_streamTotalTokens)) {
         saveChatSessions();
         if (shownInCurrentChat) {
             updateContextUsage();

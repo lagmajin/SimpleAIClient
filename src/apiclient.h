@@ -43,6 +43,9 @@ public:
 signals:
     void responseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs);
     void responseChunk(const QString &chunk);
+    // Token usage from a streaming response, which OpenAI-compatible servers
+    // send as a final usage-only chunk rather than in the first one.
+    void streamUsage(int promptTokens, int completionTokens, int totalTokens);
     void responseFinished(int responseTimeMs);
     void requestCancelled();
     void errorOccurred(const QString &error);
@@ -81,12 +84,18 @@ public slots:
 signals:
     void responseReceived(const QString &response, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs);
     void responseChunk(const QString &chunk);
+    // Token usage from a streaming response, which OpenAI-compatible servers
+    // send as a final usage-only chunk rather than in the first one.
+    void streamUsage(int promptTokens, int completionTokens, int totalTokens);
     void responseFinished(int responseTimeMs);
     void requestCancelled();
     void errorOccurred(const QString &error);
 
 private:
     void executeImpl();
+    // Retried once without stream_options if the server rejects it.
+    bool postStreaming(QJsonObject payload, int attempt);
+    static bool usageFromSse(const QString &line, int *prompt, int *completion, int *total);
     QString parseSSELine(const QString &line);
     static QString buildErrorMessage(int status, const QByteArray &body);
     std::shared_ptr<httplib::Client> takeClientSnapshot();

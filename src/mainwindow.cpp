@@ -132,6 +132,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_apiClient, &ApiClient::responseReceived, this, &MainWindow::onResponseReceived);
     connect(m_apiClient, &ApiClient::responseChunk, this, &MainWindow::onResponseChunk);
     connect(m_apiClient, &ApiClient::responseFinished, this, &MainWindow::onResponseFinished);
+    connect(m_apiClient, &ApiClient::streamUsage, this, &MainWindow::onStreamUsage);
     connect(m_apiClient, &ApiClient::requestCancelled, this, &MainWindow::onRequestCancelled);
     // A failed model list is not a failed chat turn: routing it through the
     // chat retry handler would append an error card to the open conversation
