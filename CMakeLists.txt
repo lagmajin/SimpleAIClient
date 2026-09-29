@@ -148,6 +148,7 @@ qt_add_executable(SimpleAIClient
     src/mainwindow.cpp
     src/mainwindow_ui.cpp
     src/chatview.cpp
+    src/chatviewdelegate.cpp
     src/chatsession.cpp
     src/chatflow.cpp
     src/settings.cpp

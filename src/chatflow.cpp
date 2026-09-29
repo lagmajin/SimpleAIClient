@@ -20,10 +20,9 @@ void MainWindow::beginRequest(int chatIndex)
 {
     m_requestChatIndex = chatIndex;
     m_streamedContent.clear();
-    m_pendingStreamChunk.clear();
+    m_view->clearStream();
     m_retryCount = 0;
     m_streamStartTime = QDateTime::currentMSecsSinceEpoch();
-    m_streamTokenCount = 0;
 
     m_inputField->setEnabled(false);
     setRequestInFlight(true);
@@ -128,13 +127,7 @@ void MainWindow::onResponseReceived(const QString &response, int promptTokens, i
 {
     hideThinkingIndicator();
 
-    if (m_streamingCard) {
-        m_chatLayout->removeWidget(m_streamingCard);
-        delete m_streamingCard;
-        m_streamingCard = nullptr;
-    }
-    m_streamRenderTimer->stop();
-    m_pendingStreamChunk.clear();
+    m_view->clearStream();
     m_streamedContent = response;
 
     const int requestChat = m_requestChatIndex;
@@ -184,40 +177,12 @@ void MainWindow::onResponseReceived(const QString &response, int promptTokens, i
 void MainWindow::onResponseChunk(const QString &chunk)
 {
     m_streamedContent += chunk;
-    m_pendingStreamChunk += chunk;
 
-    // The view can be rebuilt mid-stream (chat switch, regenerate): rebuild the
-    // live card from the full text received so far instead of losing the part
-    // that was rendered into the destroyed card.
+    // The view can be rebuilt mid-stream (chat switch, regenerate), so the
+    // live card is seeded from the full text received so far rather than from
+    // the chunk, and the pending buffer is what coalesces the repaints.
     if (m_requestChatIndex == m_currentChatIndex) {
-        if (!m_streamingCard) {
-            hideThinkingIndicator(false);
-            removeTrailingSpacer();
-            m_streamingCard = new ChatMessageCard("assistant", m_streamedContent, m_chatContainer);
-            m_streamingCard->setContentFontSize(m_chatFontSize);
-            m_streamingCard->setStreaming(true);
-            m_streamingCard->setTimestamp(QDateTime::currentDateTime());
-            // The live card is built here rather than through
-            // addMessageCardWithCard(), so it has to be given the same index
-            // and the same actions the reloaded copy gets. Without this the
-            // freshest answer had no Regenerate, Branch or hover timestamp
-            // while the same message acquired them after a chat switch.
-            m_streamingCard->setMessageIndex(m_chatSessions[m_currentChatIndex].messages.size());
-            m_streamingCard->showRegenerateButton(true);
-            m_streamingCard->showBranchButton(true);
-            connect(m_streamingCard, &ChatMessageCard::regenerateRequested,
-                    this, &MainWindow::onRegenerateResponse);
-            connect(m_streamingCard, &ChatMessageCard::branchRequested,
-                    this, &MainWindow::onBranchConversation);
-            m_chatLayout->addWidget(m_streamingCard);
-            appendBottomSpacer();
-            // The card was seeded with everything received so far.
-            m_pendingStreamChunk.clear();
-            refreshChatViewport();
-        }
-        if (!chunk.isEmpty() && !m_streamRenderTimer->isActive()) {
-            m_streamRenderTimer->start();
-        }
+        m_view->appendStreamChunk(chunk);
     }
 
     if (m_statusConnection) {
@@ -228,16 +193,10 @@ void MainWindow::onResponseChunk(const QString &chunk)
 void MainWindow::onResponseFinished(int responseTimeMs)
 {
     hideThinkingIndicator();
-    flushStreamingChunks();
-    m_streamRenderTimer->stop();
+    m_view->endStream();
 
     const int requestChat = m_requestChatIndex;
     const bool shownInCurrentChat = requestChat == m_currentChatIndex;
-
-    if (m_streamingCard) {
-        m_streamingCard->setStreaming(false);
-        m_streamingCard->showCopyButton(true);
-    }
 
     if (persistAssistantMessage(requestChat, m_streamedContent, 0, 0, 0)) {
         saveChatSessions();
@@ -260,11 +219,8 @@ void MainWindow::onResponseFinished(int responseTimeMs)
     m_pendingMessages.clear();
 
     if (m_statusSpeed) m_statusSpeed->clear();
-    m_streamTokenCount = 0;
     m_requestChatIndex = -1;
-    m_pendingStreamChunk.clear();
     m_streamedContent.clear();
-    m_streamingCard = nullptr;
 
     updateChatDuration();
     playNotificationSound();
@@ -281,16 +237,9 @@ void MainWindow::onErrorOccurred(const QString &error)
 
     // Drop the partial render: keeping it would prepend this attempt's tail to
     // the next response.
-    m_streamRenderTimer->stop();
-    m_pendingStreamChunk.clear();
+    m_view->clearStream();
     m_streamedContent.clear();
     if (m_statusSpeed) m_statusSpeed->clear();
-
-    if (m_streamingCard) {
-        m_chatLayout->removeWidget(m_streamingCard);
-        delete m_streamingCard;
-        m_streamingCard = nullptr;
-    }
 
     addMessageCard("error", "Error: " + error);
 
@@ -308,17 +257,11 @@ void MainWindow::onRequestCancelled()
 {
     hideThinkingIndicator();
     m_retryTimer->stop();
-    flushStreamingChunks();
-    m_streamRenderTimer->stop();
+    m_view->endStream();
 
     const int requestChat = m_requestChatIndex;
     const bool shownInCurrentChat = requestChat == m_currentChatIndex;
     const QString partialContent = m_streamedContent;
-
-    if (m_streamingCard) {
-        m_streamingCard->setStreaming(false);
-        m_streamingCard->showCopyButton(true);
-    }
 
     const bool keepPartial = !partialContent.trimmed().isEmpty();
     if (keepPartial && persistAssistantMessage(requestChat, partialContent, 0, 0, 0)) {
@@ -326,18 +269,14 @@ void MainWindow::onRequestCancelled()
         if (shownInCurrentChat) {
             updateContextUsage();
         }
-    } else if (m_streamingCard) {
-        m_chatLayout->removeWidget(m_streamingCard);
-        delete m_streamingCard;
+    } else {
+        m_view->clearStream();
     }
 
-    m_streamingCard = nullptr;
-    m_pendingStreamChunk.clear();
     m_streamedContent.clear();
     m_requestChatIndex = -1;
     m_retryCount = 0;
     m_pendingMessages.clear();
-    m_streamTokenCount = 0;
     if (m_statusSpeed) m_statusSpeed->clear();
     if (m_statusConnection) {
         m_statusConnection->setText("Stopped");
@@ -445,14 +384,8 @@ void MainWindow::onApiErrorWithRetry(const QString &error)
 
         // Drop the failed attempt's partial card so the retry starts a fresh
         // one instead of appending to it.
-        m_streamRenderTimer->stop();
-        m_pendingStreamChunk.clear();
+        m_view->clearStream();
         m_streamedContent.clear();
-        if (m_streamingCard) {
-            m_chatLayout->removeWidget(m_streamingCard);
-            delete m_streamingCard;
-            m_streamingCard = nullptr;
-        }
         if (m_requestChatIndex == m_currentChatIndex) {
             showThinkingIndicator();
         }

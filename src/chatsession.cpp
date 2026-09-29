@@ -66,6 +66,7 @@ void MainWindow::createNewChat()
         m_requestChatIndex++;
     }
     m_currentChatIndex = 0;
+    pointViewAtCurrentChat();
     clearChatDisplay();
     showWelcomeScreen();
     m_inputField->clear();
@@ -125,6 +126,7 @@ void MainWindow::switchToChat(int index, bool force)
     }
 
     m_currentChatIndex = index;
+    pointViewAtCurrentChat();
     loadChatMessages(index);
     rebuildCurrentChatView();
     m_settings.setValue("lastChatId", m_chatSessions[index].id);

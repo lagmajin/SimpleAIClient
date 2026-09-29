@@ -71,26 +71,15 @@ MainWindow::MainWindow(QWidget *parent)
     , m_apiClient(new ApiClient(this))
     , m_currentChatIndex(-1)
     , m_settings("lagmajin", "SimpleAIClient")
-    , m_streamingCard(nullptr)
     , m_currentChatImage("")
     , m_imagePreview(nullptr)
     , m_headerTitle(nullptr)
     , m_headerSubtitle(nullptr)
-    , m_thinkingRowWidget(nullptr)
-    , m_thinkingIndicator(nullptr)
-    , m_thinkingTimer(new QTimer(this))
-    , m_thinkingDots(0)
     , m_charCounter(nullptr)
     , m_searchBar(nullptr)
-    , m_currentHighlightIndex(-1)
     , m_currentProfileName("")
-    , m_autoScroll(true)
-    , m_stickToBottom(true)
-    , m_chatRenderGeneration(0)
-    , m_chatRenderCursor(-1)
     , m_chatListRenderGeneration(0)
     , m_chatListRenderCursor(0)
-    , m_chatFontSize(15)
     , m_retryCount(0)
     , m_maxRetries(3)
     , m_retryTimer(new QTimer(this))
@@ -101,9 +90,6 @@ MainWindow::MainWindow(QWidget *parent)
     , m_statusDuration(nullptr)
     , m_statusSpeed(nullptr)
     , m_streamStartTime(0)
-    , m_streamTokenCount(0)
-    , m_streamRenderTimer(new QTimer(this))
-    , m_scrollFollowTimer(new QTimer(this))
     , m_requestChatIndex(-1)
     , m_requestInFlight(false)
     , m_theme(new ThemeController(this))
@@ -120,10 +106,14 @@ MainWindow::MainWindow(QWidget *parent)
     m_isDarkTheme = m_theme->isDark();
 
     setupUI();
+    // After setupUI, which creates the scroll area, container and welcome
+    // widget the view takes over.
+    initChatView();
     setupMenu();
     loadProfiles();
     loadSettings();
     loadChatSessions();
+    pointViewAtCurrentChat();
 
     m_inputField->installEventFilter(this);
 
@@ -155,45 +145,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_newChatButton, &QPushButton::clicked, this, &MainWindow::onNewChat);
     connect(m_profileCombo, QOverload<const QString &>::of(&QComboBox::currentTextChanged), this, &MainWindow::onProfileChanged);
     connect(m_inputField, &QTextEdit::textChanged, this, &MainWindow::updateCharCounter);
-    // Slightly slower updates keep the UI smoother during long streams.
-    m_streamRenderTimer->setInterval(50);
-    m_streamRenderTimer->setSingleShot(false);
-    connect(m_streamRenderTimer, &QTimer::timeout, this, &MainWindow::flushStreamingChunks);
 
-    // Connected once for the lifetime of the window: the indicator is created
-    // and destroyed per request, so the slot has to re-check the pointer.
-    connect(m_thinkingTimer, &QTimer::timeout, this, [this]() {
-        if (!m_thinkingIndicator) return;
-        m_thinkingDots = (m_thinkingDots + 1) % 4;
-        m_thinkingIndicator->setText("Thinking" + QString(m_thinkingDots, '.'));
-    });
-
-    // Follow the live layout target without restarting an animation per chunk.
-    m_scrollFollowTimer->setInterval(16);
-    m_scrollFollowTimer->setTimerType(Qt::PreciseTimer);
-    connect(m_scrollFollowTimer, &QTimer::timeout, this, [this, clock = QElapsedTimer()]() mutable {
-        if (!m_autoScroll || !m_stickToBottom || !m_scrollArea) {
-            m_scrollFollowTimer->stop();
-            clock.invalidate();
-            return;
-        }
-        QScrollBar *bar = m_scrollArea->verticalScrollBar();
-        if (!bar || bar->isSliderDown()) {
-            m_scrollFollowTimer->stop();
-            clock.invalidate();
-            return;
-        }
-        const qint64 elapsed = clock.isValid() ? clock.restart() : 16;
-        if (!clock.isValid()) clock.start();
-        const int distance = bar->maximum() - bar->value();
-        const double blend = 1.0 - std::exp(-qMin(elapsed, qint64(50)) / 85.0);
-        const int step = qMax(1, int(std::ceil(distance * blend)));
-        bar->setValue(bar->value() + qMin(distance, step));
-        if (bar->value() == bar->maximum()) {
-            m_scrollFollowTimer->stop();
-            clock.invalidate();
-        }
-    });
 
     new QShortcut(QKeySequence("Ctrl+F"), this, [this]() { showSearchBar(); });
     new QShortcut(QKeySequence("Ctrl+="), this, [this]() { adjustFontSize(1); });
@@ -288,19 +240,6 @@ void MainWindow::onToggleTheme()
     m_isDarkTheme = m_theme->isDark();
     m_settings.setValue("darkTheme", m_isDarkTheme);
     restyleCards();
-}
-
-void MainWindow::restyleCards()
-{
-    // Message cards are created per message and own their own styles, so they
-    // are not part of the controller's registry. The streaming card lives in
-    // m_chatLayout too, so it is covered by the loop above.
-    for (int i = 0; i < m_chatLayout->count(); ++i) {
-        QLayoutItem *item = m_chatLayout->itemAt(i);
-        if (auto *card = qobject_cast<ChatMessageCard *>(item->widget())) {
-            card->applyTheme();
-        }
-    }
 }
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
@@ -536,13 +475,15 @@ void MainWindow::playNotificationSound()
 }
 
 
-void MainWindow::updateStreamingSpeed(const QString &chunk)
+void MainWindow::updateStreamingSpeed(int renderedWords)
 {
+    m_streamTokenCount += qMax(1, renderedWords);
+
     if (m_streamStartTime == 0 || !m_statusSpeed) return;
 
-    qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - m_streamStartTime;
+    const qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - m_streamStartTime;
     if (elapsed > 0) {
-        double speed = (double)m_streamTokenCount / (elapsed / 1000.0);
+        const double speed = static_cast<double>(m_streamTokenCount) / (elapsed / 1000.0);
         m_statusSpeed->setText(QString("%1 tok/s").arg(speed, 0, 'f', 1));
     }
 }
@@ -651,30 +592,25 @@ bool MainWindow::attachImageFromPath(const QString &filePath)
 
 void MainWindow::onToggleAutoScroll()
 {
-    m_autoScroll = m_autoScrollToggle->isChecked();
-    m_settings.setValue("autoScroll", m_autoScroll);
-    if (m_autoScroll) scrollToBottom();
-    else m_scrollFollowTimer->stop();
+    const bool enabled = m_autoScrollToggle->isChecked();
+    m_settings.setValue("autoScroll", enabled);
+    if (m_view) {
+        m_view->setAutoScroll(enabled);
+    }
 }
 
 void MainWindow::adjustFontSize(int delta)
 {
-    m_chatFontSize = qBound(10, m_chatFontSize + delta, 30);
     applyChatFontSize();
 }
 
 void MainWindow::resetFontSize()
 {
-    m_chatFontSize = 15;
     applyChatFontSize();
 }
 
 void MainWindow::applyChatFontSize()
 {
-    for (int i = 0; i < m_chatLayout->count(); ++i) {
-        QLayoutItem *item = m_chatLayout->itemAt(i);
-        if (auto *card = qobject_cast<ChatMessageCard*>(item->widget())) {
-            card->setContentFontSize(m_chatFontSize);
-        }
+    if (m_view) {
     }
 }

@@ -334,7 +334,6 @@ void MainWindow::setupUI()
     m_autoScrollToggle = new QCheckBox("Auto Scroll", this);
     themedToggle(m_autoScrollToggle);
     m_autoScrollToggle->setChecked(m_settings.value("autoScroll", true).toBool());
-    m_autoScroll = m_autoScrollToggle->isChecked();
     connect(m_autoScrollToggle, &QCheckBox::toggled, this, &MainWindow::onToggleAutoScroll);
     toggleRow->addWidget(m_autoScrollToggle);
 
@@ -411,39 +410,9 @@ void MainWindow::setupUI()
     m_chatLayout->addStretch();
 
     m_scrollArea->setWidget(m_chatContainer);
-    connect(m_scrollArea->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int) {
-        saveCurrentChatScrollPosition();
-    });
-    // Only user actions change follow intent; animation and layout changes do not.
-    connect(m_scrollArea->verticalScrollBar(), &QScrollBar::actionTriggered, this, [this](int action) {
-        QScrollBar *bar = m_scrollArea->verticalScrollBar();
-        const bool movingUp = action == QAbstractSlider::SliderSingleStepSub ||
-            action == QAbstractSlider::SliderPageStepSub ||
-            action == QAbstractSlider::SliderToMinimum || bar->sliderPosition() < bar->value();
-        m_stickToBottom = !movingUp && bar->maximum() - bar->sliderPosition() <= 48;
-        if (!m_stickToBottom) m_scrollFollowTimer->stop();
-        else scrollToBottom(false);
-    });
-    connect(m_scrollArea->verticalScrollBar(), &QScrollBar::sliderPressed, this, [this]() {
-        m_stickToBottom = false;
-        m_scrollFollowTimer->stop();
-    });
-    connect(m_scrollArea->verticalScrollBar(), &QScrollBar::sliderReleased, this, [this]() {
-        QScrollBar *bar = m_scrollArea->verticalScrollBar();
-        m_stickToBottom = bar->maximum() - bar->sliderPosition() <= 48;
-        scrollToBottom(false);
-    });
-    // Re-stick to the bottom whenever the content grows after layout settles.
-    // Scrolling to maximum() directly from a chunk handler races with the
-    // deferred word-wrap relayout and makes the view jump back and forth.
-    connect(m_scrollArea->verticalScrollBar(), &QScrollBar::rangeChanged, this, [this](int, int max) {
-        Q_UNUSED(max);
-        if (m_autoScroll && m_stickToBottom &&
-            !m_scrollArea->verticalScrollBar()->isSliderDown() &&
-            !m_scrollFollowTimer->isActive()) {
-            m_scrollFollowTimer->start();
-        }
-    });
+    // The scroll wiring itself lives in ChatView, which owns following the
+    // bottom and persisting the position; the view is created just after
+    // setupUI() returns.
     mainLayout->addWidget(m_scrollArea, 1);
 
     QFrame *inputFrame = new QFrame(mainPanel);

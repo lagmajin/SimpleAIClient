@@ -1,32 +1,175 @@
-#include "mainwindow.h"
-#include "appicons.h"
+// The conversation pane.
+//
+// Split out of MainWindow: it owns the card layout, the batched lazy history
+// render, scroll following and in-chat search, and needs nothing from the
+// window except the message list it renders and the three card actions.
+
+#include "chatview.h"
+
+#include "apiclient.h"
 #include "chatwidgets.h"
+#include "theme.h"
 
-
-// Chat view: message cards, the batched lazy history render, scroll
-// following, the welcome and thinking rows, and in-chat search with its
-// highlighting. Split out of mainwindow.cpp because it is the largest
-// cohesive block of the window (23 methods) and changes for its own reasons.
-
+#include <QDateTime>
 #include <QElapsedTimer>
-
-
-
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QScrollArea>
 #include <QScrollBar>
+#include <QTimer>
+#include <QVBoxLayout>
+#include <QWidget>
 
+#include <cmath>
 
-
-
-
-void MainWindow::refreshChatViewport()
-{
-    m_chatLayout->invalidate();
-    m_chatContainer->adjustSize();
-    m_scrollArea->widget()->updateGeometry();
-    m_scrollArea->viewport()->update();
+namespace {
+constexpr int kFirstBatchSize = 8;
+constexpr int kLaterBatchSize = 24;
+constexpr int kFirstChunkBudgetMs = 12;
+constexpr int kLaterChunkBudgetMs = 24;
 }
 
-void MainWindow::removeTrailingSpacer()
+ChatView::ChatView(QWidget *scrollArea,
+                   QWidget *container,
+                   QWidget *welcomeWidget,
+                   ChatSearchBar *searchBar,
+                   QList<ChatMessage> *messages,
+                   QObject *parent)
+    : QObject(parent)
+    , m_scrollArea(scrollArea)
+    , m_chatContainer(container)
+    , m_welcomeWidget(welcomeWidget)
+    , m_searchBar(searchBar)
+    , m_messages(messages)
+    , m_thinkingTimer(new QTimer(this))
+    , m_streamRenderTimer(new QTimer(this))
+    , m_scrollFollowTimer(new QTimer(this))
+{
+    m_chatLayout = qobject_cast<QVBoxLayout *>(container->layout());
+    if (!m_chatLayout) {
+        m_chatLayout = new QVBoxLayout(container);
+    }
+
+    // Slightly slower updates keep the UI smoother during long streams.
+    m_streamRenderTimer->setInterval(50);
+    m_streamRenderTimer->setSingleShot(false);
+    connect(m_streamRenderTimer, &QTimer::timeout, this, &ChatView::flushStreamingChunks);
+
+    connect(m_thinkingTimer, &QTimer::timeout, this, [this]() {
+        if (!m_thinkingIndicator) return;
+        m_thinkingDots = (m_thinkingDots + 1) % 4;
+        m_thinkingIndicator->setText("Thinking" + QString(m_thinkingDots, '.'));
+    });
+
+    // Follow the live layout target without restarting an animation per chunk,
+    // easing in so the view glides instead of jumping frame to frame.
+    m_scrollFollowTimer->setInterval(16);
+    m_scrollFollowTimer->setTimerType(Qt::PreciseTimer);
+    connect(m_scrollFollowTimer, &QTimer::timeout, this, [this, clock = QElapsedTimer()]() mutable {
+        auto *scroll = qobject_cast<QScrollArea *>(m_scrollArea);
+        if (!m_autoScroll || !m_stickToBottom || !scroll) {
+            m_scrollFollowTimer->stop();
+            clock.invalidate();
+            return;
+        }
+        QScrollBar *bar = scroll->verticalScrollBar();
+        if (!bar || bar->isSliderDown()) {
+            m_scrollFollowTimer->stop();
+            clock.invalidate();
+            return;
+        }
+        const qint64 elapsed = clock.isValid() ? clock.restart() : 16;
+        if (!clock.isValid()) clock.start();
+        const int distance = bar->maximum() - bar->value();
+        const double blend = 1.0 - std::exp(-qMin(elapsed, qint64(50)) / 85.0);
+        const int step = qMax(1, int(std::ceil(distance * blend)));
+        bar->setValue(bar->value() + qMin(distance, step));
+        if (bar->value() == bar->maximum()) {
+            m_scrollFollowTimer->stop();
+            clock.invalidate();
+        }
+    });
+
+    if (auto *scroll = qobject_cast<QScrollArea *>(m_scrollArea)) {
+        connect(scroll->verticalScrollBar(), &QScrollBar::valueChanged,
+                this, [this](int) { saveScrollPosition(); });
+        // Only user actions change follow intent; animation and layout changes
+        // do not.
+        connect(scroll->verticalScrollBar(), &QScrollBar::actionTriggered,
+                this, [this, scroll](int action) {
+            QScrollBar *bar = scroll->verticalScrollBar();
+            const bool movingUp = action == QAbstractSlider::SliderSingleStepSub ||
+                action == QAbstractSlider::SliderPageStepSub ||
+                action == QAbstractSlider::SliderToMinimum || bar->sliderPosition() < bar->value();
+            m_stickToBottom = !movingUp && bar->maximum() - bar->sliderPosition() <= 48;
+            if (!m_stickToBottom) m_scrollFollowTimer->stop();
+            else scrollToBottom(false);
+        });
+        connect(scroll->verticalScrollBar(), &QScrollBar::sliderPressed, this, [this]() {
+            m_stickToBottom = false;
+            m_scrollFollowTimer->stop();
+        });
+        connect(scroll->verticalScrollBar(), &QScrollBar::sliderReleased, this, [this, scroll]() {
+            QScrollBar *bar = scroll->verticalScrollBar();
+            m_stickToBottom = bar->maximum() - bar->sliderPosition() <= 48;
+            scrollToBottom(false);
+        });
+        // Re-stick to the bottom whenever the content grows after layout
+        // settles. Scrolling to maximum() directly from a chunk handler races
+        // with the deferred word-wrap relayout and makes the view jump back and
+        // forth.
+        connect(scroll->verticalScrollBar(), &QScrollBar::rangeChanged, this, [this, scroll](int, int) {
+            if (m_autoScroll && m_stickToBottom && !scroll->verticalScrollBar()->isSliderDown()
+                && !m_scrollFollowTimer->isActive()) {
+                m_scrollFollowTimer->start();
+            }
+        });
+    }
+}
+
+void ChatView::setMessages(QList<ChatMessage> *messages)
+{
+    m_messages = messages;
+}
+
+void ChatView::setFontSize(int pixels)
+{
+    m_fontSize = pixels;
+}
+
+void ChatView::setAutoScroll(bool enabled)
+{
+    m_autoScroll = enabled;
+    if (m_autoScroll) {
+        scrollToBottom();
+    } else {
+        m_scrollFollowTimer->stop();
+    }
+}
+
+void ChatView::setScrollPersistence(int chatIndex)
+{
+    m_currentChatIndex = chatIndex;
+}
+
+void ChatView::scrollFollowStarted()
+{
+    m_stickToBottom = false;
+    m_scrollFollowTimer->stop();
+}
+
+void ChatView::refreshViewport()
+{
+    auto *scroll = qobject_cast<QScrollArea *>(m_scrollArea);
+    m_chatLayout->invalidate();
+    m_chatContainer->adjustSize();
+    if (scroll) {
+        scroll->widget()->updateGeometry();
+        scroll->viewport()->update();
+    }
+}
+
+void ChatView::removeTrailingSpacer()
 {
     if (!m_chatLayout || m_chatLayout->count() == 0) {
         return;
@@ -39,7 +182,7 @@ void MainWindow::removeTrailingSpacer()
     }
 }
 
-void MainWindow::appendBottomSpacer()
+void ChatView::appendBottomSpacer()
 {
     if (!m_chatLayout) {
         return;
@@ -51,7 +194,7 @@ void MainWindow::appendBottomSpacer()
     }
 }
 
-void MainWindow::rebuildCurrentChatView()
+void ChatView::rebuild()
 {
     if (!m_chatContainer || !m_scrollArea) {
         return;
@@ -65,33 +208,26 @@ void MainWindow::rebuildCurrentChatView()
     // reconstructs the message cards; everything is painted once at the end.
     m_chatContainer->setUpdatesEnabled(false);
 
-    clearChatDisplay(false);
+    clear(false);
 
-    // Captured after the clear: clearChatDisplay() invalidates any render that
-    // was still pending, so reading the generation before it would make this
-    // one stale and the transcript would never be drawn.
+    // Captured after the clear: clear() invalidates any render that was still
+    // pending, so reading the generation before it would make this one stale
+    // and the transcript would never be drawn.
     const int renderGeneration = m_chatRenderGeneration;
 
-    if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) {
+    if (!m_messages || m_messages->isEmpty()) {
         showWelcomeScreen();
-        refreshChatViewport();
+        refreshViewport();
         m_chatContainer->setUpdatesEnabled(true);
         return;
     }
 
-    const auto &chat = m_chatSessions[m_currentChatIndex];
-    if (chat.messages.isEmpty()) {
-        showWelcomeScreen();
-        refreshChatViewport();
-        m_chatContainer->setUpdatesEnabled(true);
-    } else {
-        hideWelcomeScreen();
-        m_chatRenderCursor = chat.messages.size() - 1;
-        continueChatHistoryRender(renderGeneration);
-    }
+    hideWelcomeScreen();
+    m_chatRenderCursor = m_messages->size() - 1;
+    continueChatHistoryRender(renderGeneration);
 }
 
-void MainWindow::clearChatDisplay(bool refresh)
+void ChatView::clear(bool refresh)
 {
     m_thinkingTimer->stop();
 
@@ -105,13 +241,13 @@ void MainWindow::clearChatDisplay(bool refresh)
     ++m_chatRenderGeneration;
     m_chatRenderCursor = -1;
 
-    // rebuildCurrentChatView() disables updates for the duration of a batched
-    // render and re-enables them when it finishes. A pending batch is
-    // invalidated here, so whoever disabled them has to give them back.
+    // rebuild() disables updates for the duration of a batched render and
+    // re-enables them when it finishes. A pending batch is invalidated here, so
+    // whoever disabled them has to give them back.
     m_chatContainer->setUpdatesEnabled(true);
 
-    // The 50 ms render timer would otherwise keep firing with no card to
-    // append to, for as long as the request lasts.
+    // The 50 ms render timer would otherwise keep firing with no card to append
+    // to, for as long as the request lasts.
     m_streamRenderTimer->stop();
     m_pendingStreamChunk.clear();
 
@@ -132,39 +268,42 @@ void MainWindow::clearChatDisplay(bool refresh)
     m_thinkingRowWidget = nullptr;
     m_thinkingIndicator = nullptr;
     if (refresh) {
-        refreshChatViewport();
+        refreshViewport();
     }
 }
 
-void MainWindow::addMessageCard(const QString &role, const QString &content, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs)
+ChatMessageCard *ChatView::addCard(const QString &role, const QString &content,
+                                   int promptTokens, int completionTokens,
+                                   int totalTokens, int responseTimeMs)
 {
-    addMessageCardWithCard(role, content, promptTokens, completionTokens, totalTokens, responseTimeMs);
+    return addMessageCardRow(role, content, promptTokens, completionTokens, totalTokens, responseTimeMs, false);
 }
 
-ChatMessageCard* MainWindow::addMessageCardWithCard(const QString &role, const QString &content, int promptTokens, int completionTokens, int totalTokens, int responseTimeMs, bool prepend)
+ChatMessageCard *ChatView::addMessageCardRow(const QString &role, const QString &displayText,
+                                            int promptTokens, int completionTokens,
+                                            int totalTokens, int responseTimeMs, bool prepend)
 {
     hideWelcomeScreen(false);
 
     removeTrailingSpacer();
-    ChatMessageCard *card = new ChatMessageCard(role, content, m_chatContainer);
+    ChatMessageCard *card = new ChatMessageCard(role, displayText, m_chatContainer);
     card->setTimestamp(QDateTime::currentDateTime());
     card->showCopyButton(true);
-    card->setContentFontSize(m_chatFontSize);
+    card->setContentFontSize(m_fontSize);
 
-    int msgIndex = -1;
-    if (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size()) {
-        msgIndex = m_chatSessions[m_currentChatIndex].messages.size();
-    }
-    card->setMessageIndex(msgIndex);
+    card->setMessageIndex(m_messages ? m_messages->size() : -1);
 
     if (role == "assistant") {
         card->showRegenerateButton(true);
         card->showBranchButton(true);
-        connect(card, &ChatMessageCard::regenerateRequested, this, &MainWindow::onRegenerateResponse);
-        connect(card, &ChatMessageCard::branchRequested, this, &MainWindow::onBranchConversation);
+        connect(card, &ChatMessageCard::regenerateRequested,
+                this, &ChatView::regenerateRequested);
+        connect(card, &ChatMessageCard::branchRequested,
+                this, &ChatView::branchRequested);
     } else if (role == "user") {
         card->setEditable(true);
-        connect(card, &ChatMessageCard::editRequested, this, &MainWindow::onEditMessage);
+        connect(card, &ChatMessageCard::editRequested,
+                this, &ChatView::editRequested);
     }
 
     if (totalTokens > 0) {
@@ -180,29 +319,19 @@ ChatMessageCard* MainWindow::addMessageCardWithCard(const QString &role, const Q
     return card;
 }
 
-void MainWindow::continueChatHistoryRender(int generation)
+void ChatView::continueChatHistoryRender(int generation)
 {
     if (generation != m_chatRenderGeneration) {
         // A newer render owns the updates-disabled window; it will re-enable.
         return;
     }
 
-    if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) {
+    if (!m_messages || m_messages->isEmpty()) {
         m_chatContainer->setUpdatesEnabled(true);
         return;
     }
 
-    const auto &chat = m_chatSessions[m_currentChatIndex];
-    if (chat.messages.isEmpty()) {
-        m_chatContainer->setUpdatesEnabled(true);
-        return;
-    }
-
-    const bool firstChunk = (m_chatRenderCursor == chat.messages.size() - 1);
-    constexpr int kFirstBatchSize = 8;
-    constexpr int kLaterBatchSize = 24;
-    constexpr int kFirstChunkBudgetMs = 12;
-    constexpr int kLaterChunkBudgetMs = 24;
+    const bool firstChunk = (m_chatRenderCursor == m_messages->size() - 1);
     const int maxCards = firstChunk ? kFirstBatchSize : kLaterBatchSize;
     const int maxBudgetMs = firstChunk ? kFirstChunkBudgetMs : kLaterChunkBudgetMs;
     QElapsedTimer timer;
@@ -210,20 +339,14 @@ void MainWindow::continueChatHistoryRender(int generation)
 
     int rendered = 0;
     while (m_chatRenderCursor >= 0 && rendered < maxCards) {
-        const auto &msg = chat.messages[m_chatRenderCursor];
+        const ChatMessage &msg = m_messages->at(m_chatRenderCursor);
         QString displayText = msg.content;
         if (!msg.imageUrl.isEmpty()) {
             displayText += "\n[Image attached]";
         }
-        ChatMessageCard *card = addMessageCardWithCard(
-            msg.role,
-            displayText,
-            msg.promptTokens,
-            msg.completionTokens,
-            msg.totalTokens,
-            0,
-            true
-        );
+        ChatMessageCard *card = addMessageCardRow(
+            msg.role, displayText, msg.promptTokens, msg.completionTokens,
+            msg.totalTokens, 0, true);
         if (card) {
             card->setMessageIndex(m_chatRenderCursor);
             card->setTimestamp(QDateTime::currentDateTime());
@@ -236,53 +359,120 @@ void MainWindow::continueChatHistoryRender(int generation)
     }
 
     if (m_chatRenderCursor >= 0) {
-        // No intermediate refreshChatViewport(): with updates disabled it
-        // would only burn O(n) layout work per batch (O(n^2) overall).
+        // No intermediate refreshViewport(): with updates disabled it would
+        // only burn O(n) layout work per batch (O(n^2) overall).
         QTimer::singleShot(0, this, [this, generation]() {
             continueChatHistoryRender(generation);
         });
     } else {
         m_chatContainer->setUpdatesEnabled(true);
-        refreshChatViewport();
-        restoreCurrentChatScrollPosition();
+        refreshViewport();
+        restoreScrollPosition();
     }
 }
 
-void MainWindow::saveCurrentChatScrollPosition()
+void ChatView::rebuildCards(const QList<ChatMessage> &messages)
 {
-    if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size() || !m_scrollArea) {
-        return;
-    }
-
-    if (QScrollBar *bar = m_scrollArea->verticalScrollBar()) {
-        m_chatSessions[m_currentChatIndex].scrollPosition = bar->value();
+    clear();
+    for (int i = 0; i < messages.size(); ++i) {
+        const ChatMessage &msg = messages.at(i);
+        QString displayText = msg.content;
+        if (!msg.imageUrl.isEmpty()) {
+            displayText += "\n[Image attached]";
+        }
+        ChatMessageCard *card = addMessageCardRow(msg.role, displayText, msg.promptTokens,
+                                                  msg.completionTokens, msg.totalTokens, 0, false);
+        if (card) {
+            card->setMessageIndex(i);
+        }
     }
 }
 
-void MainWindow::restoreCurrentChatScrollPosition()
+void ChatView::saveScrollPosition()
 {
-    if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size() || !m_scrollArea) {
+    if (m_currentChatIndex < 0 || !m_messages || !m_scrollArea) {
         return;
     }
+    if (auto *scroll = qobject_cast<QScrollArea *>(m_scrollArea)) {
+        if (QScrollBar *bar = scroll->verticalScrollBar()) {
+            m_savedScrollPositions[m_currentChatIndex] = bar->value();
+        }
+    }
+}
 
-    const int savedPosition = m_chatSessions[m_currentChatIndex].scrollPosition;
+void ChatView::restoreScrollPosition()
+{
+    if (!m_scrollArea) {
+        return;
+    }
+    const int savedPosition = m_savedScrollPositions.value(m_currentChatIndex, 0);
     const int renderGeneration = m_chatRenderGeneration;
     m_scrollFollowTimer->stop();
     m_stickToBottom = false;
     QTimer::singleShot(0, this, [this, savedPosition, renderGeneration]() {
-        if (renderGeneration != m_chatRenderGeneration ||
-            m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size() || !m_scrollArea) {
+        if (renderGeneration != m_chatRenderGeneration) {
             return;
         }
-
-        if (QScrollBar *bar = m_scrollArea->verticalScrollBar()) {
+        auto *scroll = qobject_cast<QScrollArea *>(m_scrollArea);
+        if (!scroll) {
+            return;
+        }
+        if (QScrollBar *bar = scroll->verticalScrollBar()) {
             bar->setValue(qBound(0, savedPosition, bar->maximum()));
-            m_stickToBottom = isNearBottom();
         }
     });
 }
 
-void MainWindow::flushStreamingChunks()
+void ChatView::beginStream(const QString &seedText)
+{
+    if (m_streamingCard) {
+        return;
+    }
+    hideThinkingIndicator(false);
+    removeTrailingSpacer();
+    m_streamingCard = new ChatMessageCard("assistant", seedText, m_chatContainer);
+    m_streamingCard->setContentFontSize(m_fontSize);
+    m_streamingCard->setStreaming(true);
+    m_streamingCard->setTimestamp(QDateTime::currentDateTime());
+    m_chatLayout->addWidget(m_streamingCard);
+    appendBottomSpacer();
+    refreshViewport();
+}
+
+void ChatView::appendStreamChunk(const QString &chunk)
+{
+    if (!m_streamingCard || chunk.isEmpty()) {
+        return;
+    }
+    m_pendingStreamChunk += chunk;
+    if (!m_streamRenderTimer->isActive()) {
+        m_streamRenderTimer->start();
+    }
+}
+
+void ChatView::clearStream()
+{
+    m_streamRenderTimer->stop();
+    m_pendingStreamChunk.clear();
+    if (m_streamingCard) {
+        m_chatLayout->removeWidget(m_streamingCard);
+        delete m_streamingCard;
+        m_streamingCard = nullptr;
+    }
+}
+
+void ChatView::endStream()
+{
+    flushStreamingChunks();
+    m_streamRenderTimer->stop();
+    m_pendingStreamChunk.clear();
+    if (m_streamingCard) {
+        m_streamingCard->setStreaming(false);
+        m_streamingCard->showCopyButton(true);
+    }
+}
+
+void ChatView::flushStreamingChunks()
 {
     if (!m_streamingCard || m_pendingStreamChunk.isEmpty()) {
         if (m_streamRenderTimer->isActive() && m_pendingStreamChunk.isEmpty()) {
@@ -306,8 +496,7 @@ void MainWindow::flushStreamingChunks()
     }
 
     m_streamingCard->appendContent(chunk);
-    m_streamTokenCount += qMax(1, chunk.count(' ') + chunk.count('\n'));
-    updateStreamingSpeed(chunk);
+    emit chunkRendered(chunk.count(' ') + chunk.count('\n'));
     scrollToBottom(false);
 
     if (m_streamRenderTimer->isActive() && m_pendingStreamChunk.isEmpty()) {
@@ -315,27 +504,27 @@ void MainWindow::flushStreamingChunks()
     }
 }
 
-bool MainWindow::isNearBottom(int tolerance) const
+bool ChatView::isNearBottom(int tolerance) const
 {
-    if (!m_scrollArea) {
+    auto *scroll = qobject_cast<QScrollArea *>(m_scrollArea);
+    if (!scroll) {
         return true;
     }
-
-    QScrollBar *bar = m_scrollArea->verticalScrollBar();
+    QScrollBar *bar = scroll->verticalScrollBar();
     if (!bar) {
         return true;
     }
-
     return (bar->maximum() - bar->value()) <= tolerance;
 }
 
-void MainWindow::scrollToBottom(bool force)
+void ChatView::scrollToBottom(bool force)
 {
     if (!m_autoScroll) return;
     if (!force && !m_stickToBottom) return;
 
     m_stickToBottom = true;
-    QScrollBar *bar = m_scrollArea ? m_scrollArea->verticalScrollBar() : nullptr;
+    auto *scroll = qobject_cast<QScrollArea *>(m_scrollArea);
+    QScrollBar *bar = scroll ? scroll->verticalScrollBar() : nullptr;
     if (bar) {
         // Let word-wrap/layout settle and perform at most one movement per
         // frame. rangeChanged will request another frame only if needed.
@@ -345,7 +534,7 @@ void MainWindow::scrollToBottom(bool force)
     }
 }
 
-void MainWindow::showWelcomeScreen(bool refresh)
+void ChatView::showWelcomeScreen(bool refresh)
 {
     if (m_welcomeWidget) {
         if (m_chatLayout->indexOf(m_welcomeWidget) == -1) {
@@ -355,22 +544,22 @@ void MainWindow::showWelcomeScreen(bool refresh)
         m_welcomeWidget->show();
         m_welcomeWidget->raise();
         if (refresh) {
-            refreshChatViewport();
+            refreshViewport();
         }
     }
 }
 
-void MainWindow::hideWelcomeScreen(bool refresh)
+void ChatView::hideWelcomeScreen(bool refresh)
 {
     if (m_welcomeWidget) {
         m_welcomeWidget->setVisible(false);
         if (refresh) {
-            refreshChatViewport();
+            refreshViewport();
         }
     }
 }
 
-void MainWindow::showThinkingIndicator()
+void ChatView::showThinkingIndicator()
 {
     if (m_thinkingIndicator) return;
 
@@ -393,15 +582,17 @@ void MainWindow::showThinkingIndicator()
         "  padding: 12px 16px; "
         "}"
     );
-    m_theme->registerStyle(m_thinkingIndicator, []() {
-        return QString(
-            "QLabel { "
-            "  color: " + currentTheme().textMuted + "; "
-            "  font-size: 15px; "
-            "  font-style: italic; "
-            "  padding: 12px 16px; "
-            "}");
-    });
+    if (ThemeController *theme = themeController()) {
+        theme->registerStyle(m_thinkingIndicator, []() {
+            return QString(
+                "QLabel { "
+                "  color: " + currentTheme().textMuted + "; "
+                "  font-size: 15px; "
+                "  font-style: italic; "
+                "  padding: 12px 16px; "
+                "}");
+        });
+    }
 
     AvatarLabel *aiAvatar = new AvatarLabel("assistant", m_thinkingRowWidget);
     aiAvatar->setFixedSize(28, 28);
@@ -420,7 +611,7 @@ void MainWindow::showThinkingIndicator()
     scrollToBottom();
 }
 
-void MainWindow::hideThinkingIndicator(bool refresh)
+void ChatView::hideThinkingIndicator(bool refresh)
 {
     m_thinkingTimer->stop();
     if (!m_thinkingIndicator) return;
@@ -429,27 +620,24 @@ void MainWindow::hideThinkingIndicator(bool refresh)
     m_thinkingRowWidget = nullptr;
     m_thinkingIndicator = nullptr;
     if (refresh) {
-        refreshChatViewport();
+        refreshViewport();
     }
 }
 
-void MainWindow::rebuildCardsForMessages(const QList<ChatMessage> &messages)
+void ChatView::applyTheme()
 {
-    clearChatDisplay();
-    for (int i = 0; i < messages.size(); ++i) {
-        const auto &msg = messages.at(i);
-        QString displayText = msg.content;
-        if (!msg.imageUrl.isEmpty()) {
-            displayText += "\n[Image attached]";
-        }
-        ChatMessageCard *card = addMessageCardWithCard(msg.role, displayText, msg.promptTokens, msg.completionTokens, msg.totalTokens);
-        if (card) {
-            card->setMessageIndex(i);
+    // Message cards are created per message and own their own styles, so they
+    // are not part of the controller's registry. The streaming card lives in
+    // the layout too, so it is covered by the loop above.
+    for (int i = 0; i < m_chatLayout->count(); ++i) {
+        QLayoutItem *item = m_chatLayout->itemAt(i);
+        if (auto *card = qobject_cast<ChatMessageCard *>(item->widget())) {
+            card->applyTheme();
         }
     }
 }
 
-void MainWindow::showSearchBar()
+void ChatView::showSearchBar()
 {
     if (m_searchBar) {
         m_searchBar->setVisible(true);
@@ -457,7 +645,7 @@ void MainWindow::showSearchBar()
     }
 }
 
-void MainWindow::hideSearchBar()
+void ChatView::hideSearchBar()
 {
     if (m_searchBar) {
         m_searchBar->setVisible(false);
@@ -465,14 +653,15 @@ void MainWindow::hideSearchBar()
     }
 }
 
-void MainWindow::onSearchTextChanged(const QString &text)
+void ChatView::search(const QString &text)
 {
     // One pass over the visible cards: each card re-renders at most once, and
     // clearHighlight() is a no-op for cards that carry no highlight.
     m_highlightedCards.clear();
+    m_highlightText = text;
     for (int i = 0; i < m_chatLayout->count(); ++i) {
         QLayoutItem *item = m_chatLayout->itemAt(i);
-        if (auto *card = qobject_cast<ChatMessageCard*>(item->widget())) {
+        if (auto *card = qobject_cast<ChatMessageCard *>(item->widget())) {
             if (!text.isEmpty() && card->content().contains(text, Qt::CaseInsensitive)) {
                 card->highlightText(text);
                 m_highlightedCards.append(card);
@@ -485,33 +674,36 @@ void MainWindow::onSearchTextChanged(const QString &text)
     m_currentHighlightIndex = m_highlightedCards.isEmpty() ? -1 : 0;
     if (m_searchBar) {
         m_searchBar->m_matchCount->setText(
-            m_highlightedCards.isEmpty() ? "0/0" :
-            QString("%1/%2").arg(m_currentHighlightIndex + 1).arg(m_highlightedCards.size())
-        );
+            m_highlightedCards.isEmpty() ? "0/0"
+            : QString("%1/%2").arg(m_currentHighlightIndex + 1).arg(m_highlightedCards.size()));
     }
 }
 
-void MainWindow::onFindNext()
+void ChatView::findNext()
 {
     if (m_highlightedCards.isEmpty()) return;
     m_currentHighlightIndex = (m_currentHighlightIndex + 1) % m_highlightedCards.size();
-    m_scrollArea->ensureWidgetVisible(m_highlightedCards[m_currentHighlightIndex], 0, 120);
+    if (auto *scroll = qobject_cast<QScrollArea *>(m_scrollArea)) {
+        scroll->ensureWidgetVisible(m_highlightedCards[m_currentHighlightIndex], 0, 120);
+    }
     if (m_searchBar) {
         m_searchBar->m_matchCount->setText(QString("%1/%2").arg(m_currentHighlightIndex + 1).arg(m_highlightedCards.size()));
     }
 }
 
-void MainWindow::onFindPrevious()
+void ChatView::findPrevious()
 {
     if (m_highlightedCards.isEmpty()) return;
     m_currentHighlightIndex = (m_currentHighlightIndex - 1 + m_highlightedCards.size()) % m_highlightedCards.size();
-    m_scrollArea->ensureWidgetVisible(m_highlightedCards[m_currentHighlightIndex], 0, 120);
+    if (auto *scroll = qobject_cast<QScrollArea *>(m_scrollArea)) {
+        scroll->ensureWidgetVisible(m_highlightedCards[m_currentHighlightIndex], 0, 120);
+    }
     if (m_searchBar) {
         m_searchBar->m_matchCount->setText(QString("%1/%2").arg(m_currentHighlightIndex + 1).arg(m_highlightedCards.size()));
     }
 }
 
-void MainWindow::clearHighlights()
+void ChatView::clearHighlights()
 {
     for (auto *card : m_highlightedCards) {
         card->clearHighlight();

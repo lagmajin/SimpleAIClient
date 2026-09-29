@@ -24,6 +24,8 @@
 
 #include "apiclient.h"
 #include "chatsession.h"
+#include "chatview.h"
+#include "chatview.h"
 #include "chatwidgets.h"
 #include "secretstore.h"
 #include "theme.h"
@@ -102,14 +104,14 @@ private:
     bool restoreChatFromBackup(const QString &chatId);
     QString currentChatId() const;
     QString generateChatTitle(const QString &firstMessage);
-    void refreshChatViewport();
-    void removeTrailingSpacer();
-    void appendBottomSpacer();
+    // Thin delegates to ChatView, which owns the conversation pane. Same
+    // names and signatures as before, so the call sites are untouched.
+    void initChatView();
+    void pointViewAtCurrentChat();
     void rebuildCurrentChatView();
     void clearChatDisplay(bool refresh = true);
     void addMessageCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0, int responseTimeMs = 0);
     ChatMessageCard* addMessageCardWithCard(const QString &role, const QString &content, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0, int responseTimeMs = 0, bool prepend = false);
-    void continueChatHistoryRender(int generation);
     void scrollToBottom(bool force = true);
     bool isNearBottom(int tolerance = 48) const;
     void applyModelFilter();
@@ -125,12 +127,12 @@ private:
     void saveCurrentChatScrollPosition();
     void restoreCurrentChatScrollPosition();
     void flushStreamingChunks();
+    void refreshChatViewport();
     void saveDraft();
     void loadDraft();
     void clearDraft();
     void restyleCards();
-    void updateCharCounter();
-    // Returns false when the input is not a recognised command and the text
+    void updateCharCounter();    // Returns false when the input is not a recognised command and the text
     // was put back into the input field.
     bool handleQuickCommand(const QString &command);
     void loadProfiles();
@@ -147,7 +149,7 @@ private:
     void playNotificationSound();
     void updateChatDuration();
     void showShortcutsDialog();
-    void updateStreamingSpeed(const QString &chunk);
+    void updateStreamingSpeed(int renderedWords);
     void setRequestInFlight(bool inFlight);
     void beginRequest(int chatIndex);
     void rebuildCardsForMessages(const QList<ChatMessage> &messages);
@@ -162,11 +164,12 @@ private:
     QLabel *m_headerSubtitle = nullptr;
     QLineEdit *m_searchField = nullptr;
     QWidget *m_chatListContainer = nullptr;
+    // The view drives these; the window builds them and passes them over.
     QWidget *m_welcomeWidget = nullptr;
-    QPushButton *m_newChatButton = nullptr;
     QScrollArea *m_scrollArea = nullptr;
     QWidget *m_chatContainer = nullptr;
     QVBoxLayout *m_chatLayout = nullptr;
+    QPushButton *m_newChatButton = nullptr;
     QTextEdit *m_inputField = nullptr;
     QToolButton *m_sendButton = nullptr;
     QToolButton *m_attachButton = nullptr;
@@ -181,7 +184,6 @@ private:
     QList<ChatSession> m_chatSessions;
     int m_currentChatIndex = -1;
     QSettings m_settings;
-    ChatMessageCard *m_streamingCard = nullptr;
     QStringList m_allModels;
     QString m_currentChatImage;
     QLabel *m_imagePreview = nullptr;
@@ -192,27 +194,23 @@ private:
     QLabel *m_statusResponseTime = nullptr;
     QLabel *m_statusContextUsage = nullptr;
     bool m_isDarkTheme = true;
-    QWidget *m_thinkingRowWidget = nullptr;
-    QLabel *m_thinkingIndicator = nullptr;
-    QTimer *m_thinkingTimer = nullptr;
-    int m_thinkingDots = 0;
     QLabel *m_charCounter = nullptr;
     ChatSearchBar *m_searchBar = nullptr;
-    QList<ChatMessageCard*> m_highlightedCards;
-    int m_currentHighlightIndex = -1;
     QList<ApiProfile> m_profiles;
     QString m_currentProfileName;
-    bool m_autoScroll = true;
-    bool m_stickToBottom = true;
-    int m_chatRenderGeneration = 0;
-    int m_chatRenderCursor = -1;
+    int m_chatFontSize = 15;
+    // Full text of the answer being streamed, kept so a view rebuild mid-stream
+    // can restore the card instead of losing what already arrived.
+    QString m_streamedContent;
     int m_chatListRenderGeneration = 0;
     QList<int> m_chatListRenderIndices;
     int m_chatListRenderCursor = 0;
-    int m_chatFontSize = 15;
     int m_retryCount = 0;
     int m_maxRetries = 3;
     QTimer *m_retryTimer = nullptr;
+    // Owns every QSettings read and write, including the debounced backup.
+    // Owns the conversation pane: cards, lazy render, scroll, search.
+    class ChatView *m_view = nullptr;
     // Owns every QSettings read and write, including the debounced backup.
     class ChatStore *m_store = nullptr;
     QList<ChatMessage> m_pendingMessages;
@@ -223,10 +221,6 @@ private:
     QLabel *m_statusSpeed = nullptr;
     qint64 m_streamStartTime = 0;
     int m_streamTokenCount = 0;
-    QTimer *m_streamRenderTimer = nullptr;
-    QTimer *m_scrollFollowTimer = nullptr;
-    QString m_pendingStreamChunk;
-    QString m_streamedContent;
     // Captured by the char counter's stylesheet builder, which is re-registered
     // on every keystroke, so the state it reads has to outlive the call.
     int m_charCounterStyleLength = 0;
