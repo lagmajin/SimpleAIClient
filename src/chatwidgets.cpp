@@ -11,6 +11,10 @@
 #include <QTextCursor>
 #include <QTimer>
 #include <QtMath>
+#include <QHeaderView>
+#include <QJsonArray>
+#include <QTableWidget>
+#include <QScrollBar>
 
 AvatarLabel::AvatarLabel(const QString &role, QWidget *parent)
     : QLabel(parent)

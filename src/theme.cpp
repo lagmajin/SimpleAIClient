@@ -6,6 +6,10 @@
 #include <QSet>
 #include <QStyleFactory>
 #include <QWidget>
+#include <QHeaderView>
+#include <QJsonArray>
+#include <QTableWidget>
+#include <QScrollBar>
 
 static ThemeController *g_themeController = nullptr;
 

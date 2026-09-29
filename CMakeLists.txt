@@ -146,6 +146,12 @@ qt_standard_project_setup()
 qt_add_executable(SimpleAIClient
     src/main.cpp
     src/mainwindow.cpp
+    src/mainwindow_ui.cpp
+    src/chatview.cpp
+    src/chatsession.cpp
+    src/chatflow.cpp
+    src/settings.cpp
+    src/chatexport.cpp
     src/chatstore.cpp
     src/chatwidgets.cpp
     src/appicons.cpp

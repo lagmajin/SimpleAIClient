@@ -33,6 +33,10 @@
 #include <QJsonObject>
 #include "apiclient.h"
 
+// Sending an unbounded paste makes the API reject the turn with a 400 and the
+// markdown renderer stall on the huge body, so the composer is capped.
+constexpr int kMaxInputChars = 8000;
+
 struct ChatSession {
     QString id;
     QString title;
