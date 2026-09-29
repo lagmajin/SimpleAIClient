@@ -1,12 +1,14 @@
 // Persistence for the chat transcripts: the session index, the per-chat
 // message arrays, the drafts, and the recovery snapshot.
 //
-// Split out of mainwindow.cpp because it is a self-contained concern that
-// only touches QSettings, SecretStore and the session list. Everything here
-// is sealed with DPAPI, so the registry and the backup file hold no readable
+// Extracted from MainWindow because it is a self-contained concern that only
+// touches QSettings, the session list and SecretStore. Everything here is
+// sealed with DPAPI, so the registry and the backup file hold no readable
 // conversation text.
 
-#include "mainwindow.h"
+#include "chatstore.h"
+
+#include "chatsession.h"
 #include "secretstore.h"
 
 #include <QDir>
@@ -15,9 +17,25 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMap>
 #include <QSaveFile>
+#include <QSettings>
 #include <QStandardPaths>
-QString MainWindow::chatBackupFilePath() const
+#include <QTimer>
+
+ChatStore::ChatStore(QSettings *settings, QList<ChatSession> *sessions)
+    : m_settings(settings)
+    , m_sessions(sessions)
+    , m_backupTimer(nullptr)
+{
+}
+
+ChatStore::~ChatStore()
+{
+    delete m_backupTimer;
+}
+
+QString ChatStore::backupFilePath()
 {
     QString baseDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     if (baseDir.isEmpty()) {
@@ -26,16 +44,37 @@ QString MainWindow::chatBackupFilePath() const
     return QDir(baseDir).filePath("backups/chat-backup.json");
 }
 
-QJsonObject MainWindow::buildChatBackupSnapshot() const
+QByteArray ChatStore::readMessages(const QString &chatId) const
+{
+    const QByteArray stored = QByteArray::fromBase64(
+        m_settings->value(QString("chatMessages/%1").arg(chatId)).toString().toLatin1());
+    return SecretStore::unprotectBytes(stored);
+}
+
+QJsonObject ChatStore::previousSnapshotSession(const QString &chatId) const
+{
+    QJsonObject snapshot;
+    if (!loadBackup(&snapshot)) {
+        return QJsonObject();
+    }
+    for (const auto &val : snapshot["sessions"].toArray()) {
+        const QJsonObject session = val.toObject();
+        if (session["id"].toString() == chatId && !session["messages"].toArray().isEmpty()) {
+            return session;
+        }
+    }
+    return QJsonObject();
+}
+
+QJsonObject ChatStore::buildSnapshot(const QString &currentChatId) const
 {
     QJsonArray sessionsArray;
 
-    for (int i = 0; i < m_chatSessions.size(); ++i) {
-        const ChatSession &chat = m_chatSessions[i];
+    for (const ChatSession &chat : *m_sessions) {
         QJsonArray messagesArray;
 
         if (chat.messagesLoaded) {
-            for (const auto &msg : chat.messages) {
+            for (const ChatMessage &msg : chat.messages) {
                 QJsonObject msgObj;
                 msgObj["role"] = msg.role;
                 msgObj["content"] = msg.content;
@@ -46,11 +85,9 @@ QJsonObject MainWindow::buildChatBackupSnapshot() const
                 messagesArray.append(msgObj);
             }
         } else {
-            const QByteArray stored = QByteArray::fromBase64(
-                m_settings.value(QString("chatMessages/%1").arg(chat.id)).toString().toLatin1());
-            const QByteArray data = SecretStore::unprotectBytes(stored);
+            const QByteArray data = readMessages(chat.id);
             if (!data.isEmpty()) {
-                QJsonDocument doc = QJsonDocument::fromJson(data);
+                const QJsonDocument doc = QJsonDocument::fromJson(data);
                 if (doc.isArray()) {
                     messagesArray = doc.array();
                 }
@@ -85,42 +122,25 @@ QJsonObject MainWindow::buildChatBackupSnapshot() const
     QJsonObject snapshot;
     snapshot["version"] = 1;
     snapshot["savedAt"] = QDateTime::currentDateTime().toString(Qt::ISODate);
-    snapshot["currentChatId"] = (m_currentChatIndex >= 0 && m_currentChatIndex < m_chatSessions.size())
-        ? m_chatSessions[m_currentChatIndex].id
-        : QString();
+    snapshot["currentChatId"] = currentChatId;
     snapshot["sessions"] = sessionsArray;
     return snapshot;
 }
 
-QJsonObject MainWindow::previousSnapshotSession(const QString &chatId) const
-{
-    QJsonObject snapshot;
-    if (!loadChatBackupSnapshot(&snapshot)) {
-        return QJsonObject();
-    }
-    for (const auto &val : snapshot["sessions"].toArray()) {
-        const QJsonObject session = val.toObject();
-        if (session["id"].toString() == chatId && !session["messages"].toArray().isEmpty()) {
-            return session;
-        }
-    }
-    return QJsonObject();
-}
-
-bool MainWindow::loadChatBackupSnapshot(QJsonObject *snapshot) const
+bool ChatStore::loadBackup(QJsonObject *snapshot) const
 {
     if (!snapshot) {
         return false;
     }
 
-    QFile file(chatBackupFilePath());
+    QFile file(backupFilePath());
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         return false;
     }
 
     const QByteArray raw = file.readAll();
     QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(raw, &err);
+    const QJsonDocument doc = QJsonDocument::fromJson(raw, &err);
     if (err.error == QJsonParseError::NoError && doc.isObject()) {
         // Legacy plain-text snapshot written before the backup was encrypted.
         *snapshot = doc.object();
@@ -140,46 +160,61 @@ bool MainWindow::loadChatBackupSnapshot(QJsonObject *snapshot) const
     return true;
 }
 
-bool MainWindow::saveChatBackup()
+void ChatStore::flushBackup()
 {
-    QJsonObject snapshot = buildChatBackupSnapshot();
-    QJsonDocument doc(snapshot);
+    const QJsonDocument doc(buildSnapshot(m_currentChatId));
 
-    const QString path = chatBackupFilePath();
+    const QString path = backupFilePath();
     QDir().mkpath(QFileInfo(path).absolutePath());
 
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        return false;
+        return;
     }
 
     // The snapshot is a full copy of every transcript, so it gets the same
-    // protection as the registry entries. An unwrapped file from an older
-    // build is still accepted by loadChatBackupSnapshot().
-    // protectBytes() adds the "enc:v1:" tag itself, so the payload must be the
-    // bare JSON. Prefixing it here would leave the sealed blob with a second
-    // tag inside, and loadChatBackupSnapshot() could never parse it back.
+    // protection as the registry entries. protectBytes() adds the "enc:v1:"
+    // tag itself, so the payload must be the bare JSON; prefixing it here would
+    // leave the sealed blob with a second tag inside and loadBackup() could
+    // never parse it back.
     file.write(SecretStore::protectBytes(doc.toJson(QJsonDocument::Compact)));
-    if (!file.commit()) {
-        return false;
-    }
-
-    return true;
+    file.commit();
 }
 
-QList<int> MainWindow::recoverableChatIndices() const
+QJsonObject ChatStore::exportSnapshot(const QString &currentChatId) const
+{
+    return buildSnapshot(currentChatId);
+}
+
+void ChatStore::scheduleBackup(const QString &currentChatId)
+{
+    m_currentChatId = currentChatId;
+    if (!m_backupTimer) {
+        // The store is not a QObject, so the connection is made with an
+        // explicit context object that owns the timer. Qualified because
+        // httplib.h declares a WinSock connect() that would otherwise win
+        // overload resolution.
+        ChatStore *self = this;
+        m_backupTimer = new QTimer;
+        m_backupTimer->setSingleShot(true);
+        m_backupTimer->setInterval(400);
+        QObject::connect(m_backupTimer, &QTimer::timeout, m_backupTimer, [self]() { self->flushBackup(); });
+    }
+    m_backupTimer->start();
+}
+
+QList<int> ChatStore::recoverableChatIndices() const
 {
     QList<int> indices;
 
     QJsonObject snapshot;
-    if (!loadChatBackupSnapshot(&snapshot)) {
+    if (!loadBackup(&snapshot)) {
         return indices;
     }
 
     QMap<QString, int> backupMessageCounts;
-    QJsonArray sessionsArray = snapshot["sessions"].toArray();
-    for (const auto &val : sessionsArray) {
-        QJsonObject sessionObj = val.toObject();
+    for (const auto &val : snapshot["sessions"].toArray()) {
+        const QJsonObject sessionObj = val.toObject();
         const QString id = sessionObj["id"].toString();
         const int messageCount = sessionObj["messageCount"].toInt();
         if (!id.isEmpty() && messageCount > 0) {
@@ -187,8 +222,8 @@ QList<int> MainWindow::recoverableChatIndices() const
         }
     }
 
-    for (int i = 0; i < m_chatSessions.size(); ++i) {
-        const ChatSession &chat = m_chatSessions[i];
+    for (int i = 0; i < m_sessions->size(); ++i) {
+        const ChatSession &chat = m_sessions->at(i);
         if (chat.messageCount > 0) {
             continue;
         }
@@ -200,26 +235,25 @@ QList<int> MainWindow::recoverableChatIndices() const
     return indices;
 }
 
-bool MainWindow::restoreChatFromBackup(const QString &chatId)
+bool ChatStore::restoreChat(const QString &chatId, int currentIndex)
 {
     if (chatId.isEmpty()) {
         return false;
     }
 
     QJsonObject snapshot;
-    if (!loadChatBackupSnapshot(&snapshot)) {
+    if (!loadBackup(&snapshot)) {
         return false;
     }
 
-    QJsonArray sessionsArray = snapshot["sessions"].toArray();
     QJsonArray messagesArray;
     QString title;
     int scrollPosition = 0;
     bool pinned = false;
     bool found = false;
 
-    for (const auto &val : sessionsArray) {
-        QJsonObject sessionObj = val.toObject();
+    for (const auto &val : snapshot["sessions"].toArray()) {
+        const QJsonObject sessionObj = val.toObject();
         if (sessionObj["id"].toString() != chatId) {
             continue;
         }
@@ -236,43 +270,42 @@ bool MainWindow::restoreChatFromBackup(const QString &chatId)
         return false;
     }
 
-    const QString messagesKey = QString("chatMessages/%1").arg(chatId);
     const QByteArray json = QJsonDocument(messagesArray).toJson(QJsonDocument::Compact);
-    m_settings.setValue(messagesKey, SecretStore::protectBytes(json).toBase64());
+    m_settings->setValue(QString("chatMessages/%1").arg(chatId),
+                         SecretStore::protectBytes(json).toBase64());
 
-    for (int i = 0; i < m_chatSessions.size(); ++i) {
-        if (m_chatSessions[i].id != chatId) {
+    for (ChatSession &chat : *m_sessions) {
+        if (chat.id != chatId) {
             continue;
         }
 
-        m_chatSessions[i].title = title.isEmpty() ? m_chatSessions[i].title : title;
-        m_chatSessions[i].pinned = pinned;
-        m_chatSessions[i].scrollPosition = scrollPosition;
-        m_chatSessions[i].messageCount = messagesArray.size();
-        m_chatSessions[i].messagesLoaded = false;
-        if (i == m_currentChatIndex) {
-            loadChatMessages(i);
-            rebuildCurrentChatView();
-            updateHeaderState();
-            updateContextUsage();
-            updateChatDuration();
+        chat.title = title.isEmpty() ? chat.title : title;
+        chat.pinned = pinned;
+        chat.scrollPosition = scrollPosition;
+        chat.messageCount = messagesArray.size();
+        chat.messagesLoaded = false;
+        if (&chat == &m_sessions->at(currentIndex)) {
+            loadMessages(&chat);
         }
         break;
     }
 
-    saveChatSessions();
-    updateChatList();
     return true;
 }
 
-void MainWindow::saveChatSessions()
+void ChatStore::removeChatData(const QString &chatId)
+{
+    m_settings->remove("chatMessages/" + chatId);
+    m_settings->remove("draft_" + chatId);
+}
+
+void ChatStore::saveSessions()
 {
     QJsonArray sessionsArray;
-    for (int i = 0; i < m_chatSessions.size(); ++i) {
-        auto &chat = m_chatSessions[i];
+    for (ChatSession &chat : *m_sessions) {
         if (chat.messagesLoaded) {
             chat.messageCount = chat.messages.size();
-            saveChatMessages(i);
+            saveMessages(chat);
         }
 
         QJsonObject sessionObj;
@@ -284,35 +317,33 @@ void MainWindow::saveChatSessions()
         sessionsArray.append(sessionObj);
     }
 
-    QJsonDocument doc(sessionsArray);
-    m_settings.setValue("chatSessions",
-                        SecretStore::protect(QString::fromUtf8(doc.toJson(QJsonDocument::Compact))));
+    const QJsonDocument doc(sessionsArray);
+    m_settings->setValue("chatSessions",
+                          SecretStore::protect(QString::fromUtf8(doc.toJson(QJsonDocument::Compact))));
 
     // The backup re-serialises every chat, so coalesce the writes that a single
     // turn produces (send + finish, plus a retry) into one.
-    if (!m_backupTimer) {
-        m_backupTimer = new QTimer(this);
-        m_backupTimer->setSingleShot(true);
-        m_backupTimer->setInterval(400);
-        connect(m_backupTimer, &QTimer::timeout, this, [this]() { saveChatBackup(); });
-    }
-    m_backupTimer->start();
+    scheduleBackup(m_currentChatId);
 }
 
-void MainWindow::loadChatSessions()
+bool ChatStore::loadSessions()
 {
     // The index holds chat titles, which are derived from the first user
     // message, so it is encrypted alongside the transcripts.
-    QString data = SecretStore::unprotect(m_settings.value("chatSessions").toString());
-    if (data.isEmpty()) return;
+    const QString data = SecretStore::unprotect(m_settings->value("chatSessions").toString());
+    if (data.isEmpty()) {
+        return false;
+    }
 
-    QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8());
-    if (!doc.isArray()) return;
+    const QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8());
+    if (!doc.isArray()) {
+        return false;
+    }
 
-    m_chatSessions.clear();
+    m_sessions->clear();
     bool needsMigration = false;
     for (const auto &val : doc.array()) {
-        QJsonObject sessionObj = val.toObject();
+        const QJsonObject sessionObj = val.toObject();
         ChatSession chat;
         chat.id = sessionObj["id"].toString();
         chat.title = sessionObj["title"].toString();
@@ -321,35 +352,28 @@ void MainWindow::loadChatSessions()
         chat.messageCount = sessionObj["messageCount"].toInt();
         chat.messagesLoaded = false;
 
-        QJsonArray messagesArray = sessionObj["messages"].toArray();
+        const QJsonArray messagesArray = sessionObj["messages"].toArray();
         if (!messagesArray.isEmpty()) {
             needsMigration = true;
             for (const auto &msgVal : messagesArray) {
-                QJsonObject msgObj = msgVal.toObject();
+                const QJsonObject msgObj = msgVal.toObject();
                 chat.messages.append({msgObj["role"].toString(), msgObj["content"].toString(), msgObj["promptTokens"].toInt(), msgObj["completionTokens"].toInt(), msgObj["totalTokens"].toInt(), msgObj["imageUrl"].toString()});
             }
             chat.messageCount = chat.messages.size();
             chat.messagesLoaded = true;
         }
-        m_chatSessions.append(chat);
-    }
-
-    if (!m_chatSessions.isEmpty()) {
-        m_currentChatIndex = 0;
+        m_sessions->append(chat);
     }
 
     if (needsMigration) {
-        saveChatSessions();
+        saveSessions();
     }
+    return needsMigration;
 }
-
-void MainWindow::saveChatMessages(int index)
+void ChatStore::saveMessages(const ChatSession &chat)
 {
-    if (index < 0 || index >= m_chatSessions.size()) return;
-
-    const auto &chat = m_chatSessions[index];
     QJsonArray messagesArray;
-    for (const auto &msg : chat.messages) {
+    for (const ChatMessage &msg : chat.messages) {
         QJsonObject msgObj;
         msgObj["role"] = msg.role;
         msgObj["content"] = msg.content;
@@ -361,41 +385,52 @@ void MainWindow::saveChatMessages(int index)
     }
 
     const QByteArray json = QJsonDocument(messagesArray).toJson(QJsonDocument::Compact);
-    m_settings.setValue(QString("chatMessages/%1").arg(chat.id),
-                        SecretStore::protectBytes(json).toBase64());
+    m_settings->setValue(QString("chatMessages/%1").arg(chat.id),
+                         SecretStore::protectBytes(json).toBase64());
 }
 
-void MainWindow::loadChatMessages(int index)
+void ChatStore::loadMessages(ChatSession *chat)
 {
-    if (index < 0 || index >= m_chatSessions.size()) return;
+    if (!chat || chat->messagesLoaded) {
+        return;
+    }
 
-    auto &chat = m_chatSessions[index];
-    if (chat.messagesLoaded) return;
-
-    chat.messages.clear();
-    const QByteArray stored = QByteArray::fromBase64(
-        m_settings.value(QString("chatMessages/%1").arg(chat.id)).toString().toLatin1());
-    const QByteArray data = SecretStore::unprotectBytes(stored);
+    chat->messages.clear();
+    const QByteArray data = readMessages(chat->id);
     if (!data.isEmpty()) {
-        QJsonDocument doc = QJsonDocument::fromJson(data);
+        const QJsonDocument doc = QJsonDocument::fromJson(data);
         if (doc.isArray()) {
             for (const auto &msgVal : doc.array()) {
-                QJsonObject msgObj = msgVal.toObject();
-                chat.messages.append({msgObj["role"].toString(), msgObj["content"].toString(), msgObj["promptTokens"].toInt(), msgObj["completionTokens"].toInt(), msgObj["totalTokens"].toInt(), msgObj["imageUrl"].toString()});
+                const QJsonObject msgObj = msgVal.toObject();
+                chat->messages.append({msgObj["role"].toString(), msgObj["content"].toString(), msgObj["promptTokens"].toInt(), msgObj["completionTokens"].toInt(), msgObj["totalTokens"].toInt(), msgObj["imageUrl"].toString()});
             }
         }
     }
-    chat.messageCount = chat.messages.size();
-    chat.messagesLoaded = true;
+    chat->messageCount = chat->messages.size();
+    chat->messagesLoaded = true;
 }
 
-void MainWindow::unloadChatMessages(int index)
+void ChatStore::unloadMessages(ChatSession *chat)
 {
-    if (index < 0 || index >= m_chatSessions.size()) return;
-    auto &chat = m_chatSessions[index];
-    if (!chat.messagesLoaded) return;
+    if (!chat || !chat->messagesLoaded) {
+        return;
+    }
+    chat->messageCount = chat->messages.size();
+    chat->messages.clear();
+    chat->messagesLoaded = false;
+}
 
-    chat.messageCount = chat.messages.size();
-    chat.messages.clear();
-    chat.messagesLoaded = false;
+void ChatStore::saveDraft(const QString &chatId, const QString &draft)
+{
+    m_settings->setValue(QString("draft_%1").arg(chatId), SecretStore::protect(draft));
+}
+
+QString ChatStore::loadDraft(const QString &chatId) const
+{
+    return SecretStore::unprotect(m_settings->value(QString("draft_%1").arg(chatId)).toString());
+}
+
+void ChatStore::clearDraft(const QString &chatId)
+{
+    m_settings->remove(QString("draft_%1").arg(chatId));
 }

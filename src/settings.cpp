@@ -2,13 +2,16 @@
 #include "appicons.h"
 #include "chatwidgets.h"
 
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonDocument>
+
 
 // Settings, API profiles and model selection. Touches m_profiles, the
 // combo boxes and the QSettings keys, and nothing in the chat view.
 
 
 
-#include <QJsonArray>
 #include <QFormLayout>
 
 #include <QInputDialog>

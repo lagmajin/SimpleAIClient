@@ -1,60 +1,32 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-#include <QMainWindow>
-#include <QTextEdit>
-#include <QLineEdit>
-#include <QPushButton>
-#include <QComboBox>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QListWidget>
-#include <QSplitter>
-#include <QSettings>
-#include <QDateTime>
-#include <QScrollArea>
-#include <QFrame>
-#include <QLabel>
 #include <QCheckBox>
-#include <QToolButton>
-#include <QTimer>
-#include <QListWidgetItem>
-#include <QMouseEvent>
-#include <QShortcut>
-#include <QStatusBar>
-#include <QPixmap>
-#include <QEnterEvent>
-#include <QDateTime>
 #include <QCloseEvent>
+#include <QComboBox>
+#include <QDateTime>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QLineEdit>
+#include <QList>
+#include <QMainWindow>
+#include <QPushButton>
+#include <QScrollArea>
+#include <QSettings>
 #include <QSoundEffect>
+#include <QSplitter>
+#include <QStatusBar>
+#include <QTextEdit>
+#include <QTimer>
+#include <QToolButton>
+#include <QVBoxLayout>
+
+#include "apiclient.h"
+#include "chatsession.h"
+#include "chatwidgets.h"
 #include "secretstore.h"
 #include "theme.h"
-#include "chatwidgets.h"
-#include <QJsonObject>
-#include "apiclient.h"
-
-// Sending an unbounded paste makes the API reject the turn with a 400 and the
-// markdown renderer stall on the huge body, so the composer is capped.
-constexpr int kMaxInputChars = 8000;
-
-struct ChatSession {
-    QString id;
-    QString title;
-    QList<ChatMessage> messages;
-    int messageCount = 0;
-    bool pinned;
-    int scrollPosition = 0;
-    bool messagesLoaded = false;
-};
-
-struct ApiProfile {
-    QString name;
-    QString apiKey;
-    QString model;
-    QString systemPrompt;
-    double temperature;
-    int maxTokens;
-};
 
 class MainWindow : public QMainWindow
 {
@@ -113,11 +85,22 @@ private:
     void createNewChat();
     void switchToChat(int index, bool force = false);
     void updateChatList();
+    // Thin delegates to ChatStore, which owns everything that touches
+    // QSettings. They exist so the call sites read as "save the chats" rather
+    // than "reach into the persistence object".
     void saveChatSessions();
     void loadChatSessions();
     void saveChatMessages(int index);
     void loadChatMessages(int index);
     void unloadChatMessages(int index);
+    // The id-taking forms are the store's; the no-argument ones above and
+    // below operate on the current chat and are what the UI calls.
+    void storeDraft(const QString &chatId, const QString &draft);
+    QString storedDraft(const QString &chatId) const;
+    void removeDraft(const QString &chatId);
+    QList<int> recoverableChatIndices() const;
+    bool restoreChatFromBackup(const QString &chatId);
+    QString currentChatId() const;
     QString generateChatTitle(const QString &firstMessage);
     void refreshChatViewport();
     void removeTrailingSpacer();
@@ -169,13 +152,6 @@ private:
     void beginRequest(int chatIndex);
     void rebuildCardsForMessages(const QList<ChatMessage> &messages);
     bool persistAssistantMessage(int chatIndex, const QString &content, int promptTokens, int completionTokens, int totalTokens);
-    QString chatBackupFilePath() const;
-    QJsonObject buildChatBackupSnapshot() const;
-    QJsonObject previousSnapshotSession(const QString &chatId) const;
-    bool loadChatBackupSnapshot(QJsonObject *snapshot) const;
-    bool saveChatBackup();
-    bool restoreChatFromBackup(const QString &chatId);
-    QList<int> recoverableChatIndices() const;
 
     // Every pointer defaults to null: setupUI() registers a stylesheet builder
     // on several of these before the widget is created, and an indeterminate
@@ -237,7 +213,8 @@ private:
     int m_retryCount = 0;
     int m_maxRetries = 3;
     QTimer *m_retryTimer = nullptr;
-    QTimer *m_backupTimer = nullptr;
+    // Owns every QSettings read and write, including the debounced backup.
+    class ChatStore *m_store = nullptr;
     QList<ChatMessage> m_pendingMessages;
     QSoundEffect *m_notificationSound = nullptr;
     bool m_soundInitialized = false;

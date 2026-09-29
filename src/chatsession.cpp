@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "chatstore.h"
 #include "appicons.h"
 #include "chatwidgets.h"
 
@@ -292,8 +293,7 @@ void MainWindow::deleteChatAtRow(int row)
     }
 
     const QString removedId = m_chatSessions[row].id;
-    m_settings.remove("chatMessages/" + removedId);
-    m_settings.remove("draft_" + removedId);
+    m_store->removeChatData(removedId);
 
     if (m_chatSessions.size() == 1) {
         m_chatSessions.clear();
@@ -359,17 +359,14 @@ void MainWindow::saveDraft()
 {
     if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return;
 
-    QString draft = m_inputField->toPlainText();
-    QString key = QString("draft_%1").arg(m_chatSessions[m_currentChatIndex].id);
-    m_settings.setValue(key, SecretStore::protect(draft));
+    storeDraft(m_chatSessions[m_currentChatIndex].id, m_inputField->toPlainText());
 }
 
 void MainWindow::loadDraft()
 {
     if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return;
 
-    QString key = QString("draft_%1").arg(m_chatSessions[m_currentChatIndex].id);
-    QString draft = SecretStore::unprotect(m_settings.value(key).toString());
+    const QString draft = storedDraft(m_chatSessions[m_currentChatIndex].id);
     m_inputField->blockSignals(true);
     m_inputField->setPlainText(draft);
     m_inputField->blockSignals(false);
@@ -380,8 +377,7 @@ void MainWindow::clearDraft()
 {
     if (m_currentChatIndex < 0 || m_currentChatIndex >= m_chatSessions.size()) return;
 
-    QString key = QString("draft_%1").arg(m_chatSessions[m_currentChatIndex].id);
-    m_settings.remove(key);
+    removeDraft(m_chatSessions[m_currentChatIndex].id);
     m_inputField->blockSignals(true);
     m_inputField->clear();
     m_inputField->blockSignals(false);

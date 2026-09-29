@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "appicons.h"
+#include "chatstore.h"
 #include "chatwidgets.h"
 #include <QInputDialog>
 #include <QMessageBox>
@@ -93,7 +94,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_retryCount(0)
     , m_maxRetries(3)
     , m_retryTimer(new QTimer(this))
-    , m_backupTimer(nullptr)
+    , m_store(new ChatStore(&m_settings, &m_chatSessions))
     , m_notificationSound(nullptr)
     , m_soundInitialized(false)
     , m_chatStartTime()
@@ -564,10 +565,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
         m_apiClient->cancelCurrentRequest();
     }
     saveChatSessions();
-    if (m_backupTimer && m_backupTimer->isActive()) {
-        m_backupTimer->stop();
-        saveChatBackup();
-    }
+    // The backup is debounced, so a quit has to force the pending write or the
+    // last turn is only in the registry.
+    m_store->flushBackup();
     saveSettings();
     QMainWindow::closeEvent(event);
 }

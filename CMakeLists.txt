@@ -153,6 +153,7 @@ qt_add_executable(SimpleAIClient
     src/settings.cpp
     src/chatexport.cpp
     src/chatstore.cpp
+    src/chatstoredelegate.cpp
     src/chatwidgets.cpp
     src/appicons.cpp
     src/apiclient.cpp

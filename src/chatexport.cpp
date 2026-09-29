@@ -1,6 +1,11 @@
 #include "mainwindow.h"
 #include "appicons.h"
+#include "chatstore.h"
 #include "chatwidgets.h"
+
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonDocument>
 
 
 // Export and recovery: writing a chat to Markdown and driving the
@@ -11,7 +16,6 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QHeaderView>
-#include <QJsonArray>
 #include <QTableWidget>
 #include <QScrollBar>
 
@@ -135,7 +139,7 @@ void MainWindow::onExportChat()
 void MainWindow::onRecoverChats()
 {
     QJsonObject snapshot;
-    if (!loadChatBackupSnapshot(&snapshot)) {
+    if (!m_store->loadBackup(&snapshot)) {
         QMessageBox::information(this, "Recover Lost Chats", "No backup snapshot was found yet.");
         return;
     }
@@ -280,8 +284,8 @@ void MainWindow::onExportBackupSnapshot()
     }
 
     // An explicit export stays readable on purpose: the user picked this path,
-    // and loadChatBackupSnapshot() accepts both the encrypted and plain form.
-    QJsonDocument doc(buildChatBackupSnapshot());
+    // and the store accepts both the encrypted and the plain form on import.
+    QJsonDocument doc(m_store->exportSnapshot(currentChatId()));
     QSaveFile file(filePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QMessageBox::warning(this, "Export Failed", "Could not save file: " + filePath);
