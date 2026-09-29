@@ -6,9 +6,6 @@
 #include <QDebug>
 #include <QDateTime>
 #include <QPointer>
-#include <QHeaderView>
-#include <QTableWidget>
-#include <QScrollBar>
 
 namespace {
 constexpr int kConnectTimeoutSeconds = 15;

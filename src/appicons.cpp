@@ -8,10 +8,6 @@
 #include <QtMath>
 
 #include <cmath>
-#include <QHeaderView>
-#include <QJsonArray>
-#include <QTableWidget>
-#include <QScrollBar>
 
 namespace {
 

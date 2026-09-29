@@ -17,9 +17,6 @@
 #include <QJsonObject>
 #include <QSaveFile>
 #include <QStandardPaths>
-#include <QHeaderView>
-#include <QTableWidget>
-#include <QScrollBar>
 QString MainWindow::chatBackupFilePath() const
 {
     QString baseDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);

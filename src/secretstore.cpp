@@ -5,10 +5,6 @@
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <dpapi.h>
-#include <QHeaderView>
-#include <QJsonArray>
-#include <QTableWidget>
-#include <QScrollBar>
 #endif
 
 namespace {
