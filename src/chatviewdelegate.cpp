@@ -22,7 +22,9 @@ void MainWindow::initChatView()
 }
 
 // The view renders the chat that is currently open, so it is re-pointed at the
-// message list whenever the current chat changes.
+// message list whenever the current chat changes. Every mutation of
+// m_chatSessions that shifts an index has to call this: the list the view
+// borrows moves underneath it otherwise.
 void MainWindow::pointViewAtCurrentChat()
 {
     if (!m_view) {
@@ -38,114 +40,115 @@ void MainWindow::pointViewAtCurrentChat()
 
 void MainWindow::rebuildCurrentChatView()
 {
-    m_view->rebuild();
+    if (m_view) m_view->rebuild();
 }
 
 void MainWindow::clearChatDisplay(bool refresh)
 {
-    m_view->clear(refresh);
+    if (m_view) m_view->clear(refresh);
 }
 
 void MainWindow::addMessageCard(const QString &role, const QString &content,
                                 int promptTokens, int completionTokens,
                                 int totalTokens, int responseTimeMs)
 {
-    m_view->addCard(role, content, promptTokens, completionTokens, totalTokens, responseTimeMs);
+    if (m_view) m_view->addCard(role, content, promptTokens, completionTokens, totalTokens, responseTimeMs);
 }
 
 ChatMessageCard *MainWindow::addMessageCardWithCard(const QString &role, const QString &content,
                                                     int promptTokens, int completionTokens,
                                                     int totalTokens, int responseTimeMs, bool)
 {
-    return m_view->addCard(role, content, promptTokens, completionTokens, totalTokens, responseTimeMs);
+    return m_view ? m_view->addCard(role, content, promptTokens, completionTokens, totalTokens, responseTimeMs)
+                      : nullptr;
 }
 
 void MainWindow::rebuildCardsForMessages(const QList<ChatMessage> &messages)
 {
-    m_view->rebuildCards(messages);
+    if (m_view) m_view->rebuildCards(messages);
 }
 
 void MainWindow::scrollToBottom(bool force)
 {
-    m_view->scrollToBottom(force);
+    if (m_view) m_view->scrollToBottom(force);
 }
 
 bool MainWindow::isNearBottom(int tolerance) const
 {
-    return m_view->isNearBottom(tolerance);
+    return m_view ? m_view->isNearBottom(tolerance) : true;
 }
 
 void MainWindow::saveCurrentChatScrollPosition()
 {
-    m_view->saveScrollPosition();
+    if (m_view) m_view->saveScrollPosition();
 }
 
 void MainWindow::restoreCurrentChatScrollPosition()
 {
-    m_view->restoreScrollPosition();
+    if (m_view) m_view->restoreScrollPosition();
 }
 
 void MainWindow::refreshChatViewport()
 {
-    m_view->refreshViewport();
+    if (m_view) m_view->refreshViewport();
 }
 
 void MainWindow::flushStreamingChunks()
 {
-    m_view->endStream();
+    if (m_view) m_view->endStream();
 }
 
 void MainWindow::showWelcomeScreen(bool refresh)
 {
-    m_view->showWelcomeScreen(refresh);
+    if (m_view) m_view->showWelcomeScreen(refresh);
 }
 
 void MainWindow::hideWelcomeScreen(bool refresh)
 {
-    m_view->hideWelcomeScreen(refresh);
+    if (m_view) m_view->hideWelcomeScreen(refresh);
 }
 
 void MainWindow::showThinkingIndicator()
 {
-    m_view->showThinkingIndicator();
+    if (m_view) m_view->showThinkingIndicator();
 }
 
 void MainWindow::hideThinkingIndicator(bool refresh)
 {
-    m_view->hideThinkingIndicator(refresh);
+    if (m_view) m_view->hideThinkingIndicator(refresh);
 }
 
 void MainWindow::restyleCards()
 {
-    m_view->applyTheme();
+    if (m_view) m_view->applyTheme();
 }
 
 void MainWindow::showSearchBar()
 {
-    m_view->showSearchBar();
+    if (m_view) m_view->showSearchBar();
 }
 
 void MainWindow::hideSearchBar()
 {
-    m_view->hideSearchBar();
+    if (m_view) m_view->hideSearchBar();
 }
 
 void MainWindow::onSearchTextChanged(const QString &text)
 {
-    m_view->search(text);
+    if (m_view) m_view->search(text);
 }
 
 void MainWindow::onFindNext()
 {
-    m_view->findNext();
+    if (m_view) m_view->findNext();
 }
 
 void MainWindow::onFindPrevious()
 {
-    m_view->findPrevious();
+    if (m_view) m_view->findPrevious();
 }
 
 void MainWindow::clearHighlights()
 {
-    m_view->clearHighlights();
+    if (m_view) m_view->clearHighlights();
 }

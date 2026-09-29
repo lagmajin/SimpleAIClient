@@ -20,7 +20,7 @@ void MainWindow::beginRequest(int chatIndex)
 {
     m_requestChatIndex = chatIndex;
     m_streamedContent.clear();
-    m_view->clearStream();
+    if (m_view) m_view->clearStream();
     m_retryCount = 0;
     m_streamStartTime = QDateTime::currentMSecsSinceEpoch();
 
@@ -127,7 +127,7 @@ void MainWindow::onResponseReceived(const QString &response, int promptTokens, i
 {
     hideThinkingIndicator();
 
-    m_view->clearStream();
+    if (m_view) m_view->clearStream();
     m_streamedContent = response;
 
     const int requestChat = m_requestChatIndex;
@@ -182,7 +182,7 @@ void MainWindow::onResponseChunk(const QString &chunk)
     // live card is seeded from the full text received so far rather than from
     // the chunk, and the pending buffer is what coalesces the repaints.
     if (m_requestChatIndex == m_currentChatIndex) {
-        m_view->appendStreamChunk(chunk);
+        if (m_view) m_view->appendStreamChunk(chunk);
     }
 
     if (m_statusConnection) {
@@ -193,7 +193,7 @@ void MainWindow::onResponseChunk(const QString &chunk)
 void MainWindow::onResponseFinished(int responseTimeMs)
 {
     hideThinkingIndicator();
-    m_view->endStream();
+    if (m_view) m_view->endStream();
 
     const int requestChat = m_requestChatIndex;
     const bool shownInCurrentChat = requestChat == m_currentChatIndex;
@@ -237,7 +237,7 @@ void MainWindow::onErrorOccurred(const QString &error)
 
     // Drop the partial render: keeping it would prepend this attempt's tail to
     // the next response.
-    m_view->clearStream();
+    if (m_view) m_view->clearStream();
     m_streamedContent.clear();
     if (m_statusSpeed) m_statusSpeed->clear();
 
@@ -257,7 +257,7 @@ void MainWindow::onRequestCancelled()
 {
     hideThinkingIndicator();
     m_retryTimer->stop();
-    m_view->endStream();
+    if (m_view) m_view->endStream();
 
     const int requestChat = m_requestChatIndex;
     const bool shownInCurrentChat = requestChat == m_currentChatIndex;
@@ -270,7 +270,7 @@ void MainWindow::onRequestCancelled()
             updateContextUsage();
         }
     } else {
-        m_view->clearStream();
+        if (m_view) m_view->clearStream();
     }
 
     m_streamedContent.clear();
@@ -340,6 +340,9 @@ void MainWindow::onBranchConversation(int messageIndex)
 
     m_chatSessions.prepend(newChat);
     m_currentChatIndex = 0;
+    // prepend shifted every index, and the view borrows a session's message
+    // list by pointer, so it has to be re-pointed at the new branch.
+    pointViewAtCurrentChat();
 
     rebuildCardsForMessages(newChat.messages);
 
@@ -384,7 +387,7 @@ void MainWindow::onApiErrorWithRetry(const QString &error)
 
         // Drop the failed attempt's partial card so the retry starts a fresh
         // one instead of appending to it.
-        m_view->clearStream();
+        if (m_view) m_view->clearStream();
         m_streamedContent.clear();
         if (m_requestChatIndex == m_currentChatIndex) {
             showThinkingIndicator();

@@ -220,6 +220,9 @@ void MainWindow::deleteChatAtRow(int row)
             switchToChat(m_currentChatIndex, true);
         } else if (m_currentChatIndex > row) {
             m_currentChatIndex--;
+            // The view borrows this list by pointer, and removeAt() moved the
+            // elements, so it is now looking at the wrong chat's messages.
+            pointViewAtCurrentChat();
         }
     }
 
