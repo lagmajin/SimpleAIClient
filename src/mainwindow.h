@@ -48,6 +48,8 @@ private slots:
     void onStreamUsage(int promptTokens, int completionTokens, int totalTokens);
     void onErrorOccurred(const QString &error);
     void onSettings();
+    void onChooseTone();
+    void onClearTone();
     void onExportChat();
     void onAdvancedSettings();
     void onToggleTheme();

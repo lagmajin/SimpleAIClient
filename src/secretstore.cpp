@@ -139,8 +139,3 @@ QString SecretStore::unprotect(const QString &stored)
 }
 
 #endif // Q_OS_WIN
-
-const char *SecretStore::prefix()
-{
-    return kPrefix;
-}

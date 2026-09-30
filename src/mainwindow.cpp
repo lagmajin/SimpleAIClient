@@ -470,9 +470,11 @@ void MainWindow::playNotificationSound()
             }
         }
 
-        const QString source = QFileInfo::exists(m_settings.value("notificationTonePath").toString())
-            ? m_settings.value("notificationTonePath").toString()
-            : cachePath;
+        // A user-supplied tone wins over the synthesised one. The key was
+        // unreadable before because nothing ever wrote it; onChooseTone() and
+        // onClearTone() in the settings dialog do now.
+        const QString customTone = m_settings.value("notificationTonePath").toString();
+        const QString source = QFileInfo::exists(customTone) ? customTone : cachePath;
         if (QFileInfo::exists(source)) {
             m_notificationSound->setSource(QUrl::fromLocalFile(source));
         }
@@ -481,6 +483,29 @@ void MainWindow::playNotificationSound()
     if (m_notificationSound && m_notificationSound->isLoaded()) {
         m_notificationSound->play();
     }
+}
+
+void MainWindow::onChooseTone()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, "Choose Notification Sound", QString(),
+        "Audio files (*.wav);;All Files (*)");
+    if (path.isEmpty()) {
+        return;
+    }
+    m_settings.setValue("notificationTonePath", path);
+    // Drop the cached effect so the next completion uses the new source.
+    delete m_notificationSound;
+    m_notificationSound = nullptr;
+    m_soundInitialized = false;
+}
+
+void MainWindow::onClearTone()
+{
+    m_settings.remove("notificationTonePath");
+    delete m_notificationSound;
+    m_notificationSound = nullptr;
+    m_soundInitialized = false;
 }
 
 

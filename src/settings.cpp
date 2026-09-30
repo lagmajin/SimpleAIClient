@@ -2,6 +2,7 @@
 #include "appicons.h"
 #include "chatwidgets.h"
 
+#include <QFileDialog>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -146,6 +147,27 @@ void MainWindow::onAdvancedSettings()
     maxTokensSpin->setSpecialValueText("Unlimited");
     maxTokensSpin->setToolTip("Maximum tokens in response (0 = unlimited)");
     formLayout->addRow("Max Tokens:", maxTokensSpin);
+
+    // The completion chime. Without a custom file a short two-note tone is
+    // synthesised on first use, so this row only exists to replace it.
+    QWidget *toneRow = new QWidget(&dialog);
+    QHBoxLayout *toneLayout = new QHBoxLayout(toneRow);
+    toneLayout->setContentsMargins(0, 0, 0, 0);
+    const QString customTone = m_settings.value("notificationTonePath").toString();
+    QLabel *toneLabel = new QLabel(customTone.isEmpty() ? "Default (synthesised)" : customTone, toneRow);
+    toneLabel->setToolTip(customTone.isEmpty()
+        ? "A short two-note chime, generated on first use."
+        : customTone);
+    toneLabel->setWordWrap(false);
+    QPushButton *chooseTone = new QPushButton("Choose...", toneRow);
+    QPushButton *clearTone = new QPushButton("Reset", toneRow);
+    clearTone->setEnabled(!customTone.isEmpty());
+    toneLayout->addWidget(toneLabel, 1);
+    toneLayout->addWidget(chooseTone);
+    toneLayout->addWidget(clearTone);
+    connect(chooseTone, &QPushButton::clicked, this, &MainWindow::onChooseTone);
+    connect(clearTone, &QPushButton::clicked, this, &MainWindow::onClearTone);
+    formLayout->addRow("Notification Sound:", toneRow);
 
     layout->addLayout(formLayout);
 

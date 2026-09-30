@@ -29,10 +29,6 @@ public:
 
     static bool isEncrypted(const QString &stored);
     static bool isEncrypted(const QByteArray &stored);
-
-    // Marker written in front of an encrypted value. Exposed so a container
-    // (the backup file) can tag its own payload with the same convention.
-    static const char *prefix();
 };
 
 #endif // SECRETSTORE_H
